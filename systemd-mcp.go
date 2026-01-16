@@ -102,11 +102,13 @@ func main() {
 		authorization, _ = authkeeper.NewNoAuth()
 	} else if viper.GetString("http") != "" && !viper.GetBool("noauth") {
 		if viper.GetString("controller") == "" {
-			panic("controller needs to be set when http is set")
+			slog.Error("controller needs to be set when http is set")
+			os.Exit(1)
 		}
 		authorization, err = authkeeper.NewOauth(viper.GetString("controller"))
 		if err != nil {
-			panic(err)
+			slog.Error("couldn't create connection to controller", "error", err)
+			os.Exit(1)
 		}
 	} else {
 		authorization, err = authkeeper.NewPolkitAuth(DBusName, DBusPath)
@@ -301,7 +303,7 @@ func main() {
 					JWKSURI:                authorization.Oauth2.JwksUri,
 				}
 				if err := json.NewEncoder(w).Encode(prm); err != nil {
-					log.Panic(err)
+					slog.Error("couldn't encode heaeder", "error", err)
 				}
 			})
 
@@ -311,7 +313,7 @@ func main() {
 				ReadHeaderTimeout: 3 * time.Second,
 			}
 			if err := s.ListenAndServe(); err != nil {
-				panic(err)
+				slog.Error("couldn't start http server", "error", "err")
 			}
 
 		}

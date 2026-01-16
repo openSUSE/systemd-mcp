@@ -7,7 +7,7 @@ import (
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	dbus_pkg "github.com/openSUSE/systemd-mcp/dbus"
+	auth_pkg "github.com/openSUSE/systemd-mcp/authkeeper"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -210,7 +210,7 @@ func TestListUnits(t *testing.T) {
 					listUnitFiles:       tt.mockListFiles,
 					getAllProperties:    tt.mockGetProps,
 				},
-				auth: &dbus_pkg.AuthKeeper{
+				auth: &auth_pkg.AuthKeeper{
 					ReadAllowed: true,
 				},
 			}
@@ -320,7 +320,7 @@ func TestChangeUnitState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			conn := &Connection{
 				dbus: tt.mockDbus,
-				auth: &dbus_pkg.AuthKeeper{
+				auth: &auth_pkg.AuthKeeper{
 					WriteAllowed: true,
 				},
 				rchannel: make(chan string, 10),

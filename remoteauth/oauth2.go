@@ -46,6 +46,11 @@ func GetJwksURI(issuer string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		slog.Warn("failed to get openid-configuration", "status", resp.Status, "url", issuer+"/.well-known/openid-configuration")
+		return "", fmt.Errorf("failed to get openid-configuration: %s", resp.Status)
+	}
+
 	openIDConfig := struct {
 		JwksURI string `json:"jwks_uri"`
 	}{}

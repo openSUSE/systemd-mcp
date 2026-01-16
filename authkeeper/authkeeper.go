@@ -80,7 +80,7 @@ func NewOauth(controller string) (*AuthKeeper, error) {
 	a.context = context.Background()
 	keyf, err := keyfunc.NewDefaultCtx(a.context, []string{jwksURI})
 	if err != nil {
-		panic(err)
+		return a, err
 	}
 	a.Oauth2 = &remoteauth.Oauth2Auth{KeyFunc: keyf}
 	a.Oauth2.JwksUri = jwksURI
