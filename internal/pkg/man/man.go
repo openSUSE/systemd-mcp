@@ -15,7 +15,7 @@ import (
 
 type GetManPageParams struct {
 	Name     string   `json:"name" jsonschema:"Name of the man page"`
-	Section  string   `json:"section,omitempty" jsonschema:"Section of the man page (default 1)"`
+	Section  int      `json:"section,omitempty" jsonschema:"Section of the man page (default 1)"`
 	Offset   int      `json:"offset,omitempty" jsonschema:"Line offset for pagination"`
 	Limit    int      `json:"limit,omitempty" jsonschema:"Maximum number of lines to return (default 500)"`
 	Chapters []string `json:"chapters,omitempty" jsonschema:"List of chapters to retrieve (e.g. ['NAME', 'SYNOPSIS'])"`
@@ -154,14 +154,24 @@ func parseAndFilterManPage(cleanOutput string, params *GetManPageParams) ManPage
 	}
 }
 
+var validManName = regexp.MustCompile(`^[a-zA-Z0-9-]+$`)
+
 func GetManPage(ctx context.Context, req *mcp.CallToolRequest, params *GetManPageParams) (*mcp.CallToolResult, any, error) {
+	if params.Name == "" {
+		return nil, nil, fmt.Errorf("man page name is required")
+	}
+
+	if !validManName.MatchString(params.Name) {
+		return nil, nil, fmt.Errorf("invalid man page name: %s (only a-z, A-Z, 0-9, and - are allowed)", params.Name)
+	}
+
 	section := params.Section
-	if section == "" {
-		section = "1"
+	if section == 0 {
+		section = 1
 	}
 
 	// Try with specific section first: man 1 ls
-	cmd := exec.Command("man", section, params.Name)
+	cmd := exec.Command("man", fmt.Sprint(section), params.Name)
 	cmd.Env = append(cmd.Environ(), "COLUMNS=80", "MAN_POSIXLY_CORRECT=1")
 
 	var out bytes.Buffer
@@ -184,7 +194,7 @@ func GetManPage(ctx context.Context, req *mcp.CallToolRequest, params *GetManPag
 			if errMsg == "" {
 				errMsg = err.Error()
 			}
-			return nil, nil, fmt.Errorf("failed to get man page for %s(%s): %s", params.Name, section, errMsg)
+			return nil, nil, fmt.Errorf("failed to get man page for %s(%d): %s", params.Name, section, errMsg)
 		}
 		// Fallback succeeded
 		out = outFallback

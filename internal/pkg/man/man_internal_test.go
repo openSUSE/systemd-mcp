@@ -119,3 +119,27 @@ func TestParseAndFilterManPage(t *testing.T) {
 		})
 	}
 }
+
+func TestGetManPageValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		manName string
+		wantErr bool
+	}{
+		{"ValidName", "ls", false},
+		{"ValidNameWithHyphen", "systemd-analyze", false},
+		{"InvalidCharSpace", "ls --help", true},
+		{"InvalidCharSpecial", "ls; rm -rf /", true},
+		{"EmptyName", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := &GetManPageParams{Name: tt.manName}
+			_, _, err := GetManPage(nil, nil, params)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetManPage() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
