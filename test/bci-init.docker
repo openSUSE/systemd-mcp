@@ -11,6 +11,10 @@ RUN cd systemd-mcp/testClient && go build -o /usr/local/bin/mcp-client main.go
 RUN printf "[Unit]\nDescription=Dummy Service\n\n[Service]\nExecStart=/bin/sh -c 'while true; do echo \"Dummy log line at \$(date)\"; sleep 1; done'\n[Install]\nWantedBy=multi-user.target\n" > /etc/systemd/system/dummy.service
 RUN systemctl enable dummy.service
 
+# Add failed dummy service
+RUN printf "[Unit]\nDescription=Failed Dummy Service\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/false\n[Install]\nWantedBy=multi-user.target\n" > /etc/systemd/system/failed-dummy.service
+RUN systemctl enable failed-dummy.service
+
 # Add a non-root user for testing authorization failure
 RUN useradd -m testuser
 

@@ -133,13 +133,13 @@ func NewRootCmd() *cobra.Command {
 						Register func(server *mcp.Server, tool *mcp.Tool)
 					}{
 						Tool: &mcp.Tool{
-							Title:       "List units",
-							Name:        "list_units",
-							Description: fmt.Sprintf("List systemd units. Filter by states (%v) or patterns. Can return detailed properties. Use mode='files' to list all installed unit files.", systemd.ValidStates()),
-							InputSchema: systemd.CreateListUnitsSchema(),
+							Title:       "List loaded units",
+							Name:        "list_loaded_units",
+							Description: fmt.Sprintf("List systemd units that are currently loaded in memory. Filter by states (%v) or patterns. Can return detailed properties.", systemd.ValidStates()),
+							InputSchema: systemd.CreateListLoadedUnitsSchema(),
 						},
 						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.ListUnits)
+							mcp.AddTool(server, tool, systemConn.ListLoadedUnits)
 						},
 					},
 					struct {
@@ -147,6 +147,21 @@ func NewRootCmd() *cobra.Command {
 						Register func(server *mcp.Server, tool *mcp.Tool)
 					}{
 						Tool: &mcp.Tool{
+							Title:       "List unit files",
+							Name:        "list_unit_files",
+							Description: fmt.Sprintf("List all systemd unit files on disk. Filter by enablement states (%v) or patterns.", systemd.ValidUnitFileStates()),
+							InputSchema: systemd.CreateListUnitFilesSchema(),
+						},
+						Register: func(server *mcp.Server, tool *mcp.Tool) {
+							mcp.AddTool(server, tool, systemConn.ListUnitFiles)
+						},
+					},
+					struct {
+						Tool     *mcp.Tool
+						Register func(server *mcp.Server, tool *mcp.Tool)
+					}{
+						Tool: &mcp.Tool{
+							Title:       "Change unit state",
 							Name:        "change_unit_state",
 							Description: "Change the state of a unit or service (start, stop, restart, reload, enable, disable).",
 							InputSchema: systemd.CreateChangeInputSchema(),
@@ -160,6 +175,7 @@ func NewRootCmd() *cobra.Command {
 						Register func(server *mcp.Server, tool *mcp.Tool)
 					}{
 						Tool: &mcp.Tool{
+							Title:       "Check restart/reload status",
 							Name:        "check_restart_reload",
 							Description: "Check the reload or restart status of a unit. Can only be called if the restart or reload job timed out.",
 						},
@@ -180,6 +196,7 @@ func NewRootCmd() *cobra.Command {
 					Register func(server *mcp.Server, tool *mcp.Tool)
 				}{
 					Tool: &mcp.Tool{
+						Title:       "List system log",
 						Name:        "list_log",
 						Description: "Get the last log entries for the given service or unit.",
 						InputSchema: journal.CreateListLogsSchema(),
@@ -196,6 +213,7 @@ func NewRootCmd() *cobra.Command {
 					Register func(server *mcp.Server, tool *mcp.Tool)
 				}{
 					Tool: &mcp.Tool{
+						Title:       "Get content of file",
 						Name:        "get_file",
 						Description: "Read a file from the system. Can show content and metadata. Supports pagination for large files.",
 						InputSchema: file.CreateFileSchema(),
@@ -214,6 +232,7 @@ func NewRootCmd() *cobra.Command {
 				Register func(server *mcp.Server, tool *mcp.Tool)
 			}{
 				Tool: &mcp.Tool{
+					Title:       "Display man page",
 					Name:        "get_man_page",
 					Description: "Retrieve a man page. Supports filtering by section and chapters, and pagination.",
 					InputSchema: man.CreateManPageSchema(),

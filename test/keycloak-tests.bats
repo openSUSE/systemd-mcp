@@ -108,7 +108,7 @@ teardown_file() {
   podman rm -f $KEYCLOAK_CONTAINER || true
   podman network rm $NETWORK_NAME || true
   rm -f ${BATS_TEST_DIRNAME}/systemd-mcp.tar.gz
-  podman image rm $TEST_CONTAINER || true
+  podman image rm systemd-mcp-bci || true
 }
 
 @test "Unauthorized access should fail" {
@@ -129,7 +129,7 @@ teardown_file() {
   [ -n "$TOKEN" ]
   
   # List units via MCP
-  run ../test-client run list_units -a '{"patterns":["dummy.service"]}' --endpoint "$MCP_URL" --token "$TOKEN" --skip-tls-verify
+  run ../test-client run list_loaded_units -a '{"patterns":["dummy.service"]}' --endpoint "$MCP_URL" --token "$TOKEN" --skip-tls-verify
     
   [ "$status" -eq 0 ]
   [[ "$output" == *"dummy.service"* ]]
