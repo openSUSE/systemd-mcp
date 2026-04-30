@@ -221,7 +221,7 @@ func NewRootCmd() *cobra.Command {
 					Register: func(server *mcp.Server, tool *mcp.Tool) {
 						mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, args *file.GetFileParams) (*mcp.CallToolResult, any, error) {
 							slog.Debug("get_file called", "args", args)
-							res, out, err := file.GetFile(ctx, req, args)
+							res, out, err := file.GetFile(ctx, req, args, authorization)
 							return res, out, err
 						})
 					},

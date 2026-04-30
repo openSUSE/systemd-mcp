@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	auth "github.com/openSUSE/systemd-mcp/authkeeper"
 	"os"
 	"os/exec"
 	"os/user"
@@ -94,7 +95,12 @@ func getFileMetadata(ctx context.Context, path string, info os.FileInfo, fetchAC
 }
 
 // reads a file with the privileges of the systemd service
-func GetFile(ctx context.Context, req *mcp.CallToolRequest, params *GetFileParams) (*mcp.CallToolResult, any, error) {
+func GetFile(ctx context.Context, req *mcp.CallToolRequest, params *GetFileParams, authKeeper auth.AuthKeeper) (*mcp.CallToolResult, any, error) {
+	if allowed, err := authKeeper.IsReadAuthorized(ctx); err != nil {
+		return nil, nil, err
+	} else if !allowed {
+		return nil, nil, fmt.Errorf("calling method was canceled by user")
+	}
 	info, err := os.Stat(params.Path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to stat file: %w", err)
