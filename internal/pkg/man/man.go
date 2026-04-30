@@ -15,7 +15,7 @@ import (
 
 type GetManPageParams struct {
 	Name     string   `json:"name" jsonschema:"Name of the man page"`
-	Section  int      `json:"section,omitempty" jsonschema:"Section of the man page (default 1)"`
+	Section  string   `json:"section,omitempty" jsonschema:"Section of the man page (default 1, e.g., 1, 8, 8p, 3perl)"`
 	Offset   int      `json:"offset,omitempty" jsonschema:"Line offset for pagination"`
 	Limit    int      `json:"limit,omitempty" jsonschema:"Maximum number of lines to return (default 500)"`
 	Chapters []string `json:"chapters,omitempty" jsonschema:"List of chapters to retrieve (e.g. ['NAME', 'SYNOPSIS'])"`
@@ -54,7 +54,7 @@ type ManPageResult struct {
 func CreateManPageSchema() *jsonschema.Schema {
 	inputSchema, _ := jsonschema.For[GetManPageParams](nil)
 	inputSchema.Properties["limit"].Default = json.RawMessage(`2000`)
-	inputSchema.Properties["section"].Default = json.RawMessage(`1`)
+	inputSchema.Properties["section"].Default = json.RawMessage(`"1"`)
 	return inputSchema
 }
 
@@ -154,7 +154,12 @@ func parseAndFilterManPage(cleanOutput string, params *GetManPageParams) ManPage
 	}
 }
 
+const (
+	ValidManSectionPattern = `^[a-zA-Z0-9]+$`
+)
+
 var validManName = regexp.MustCompile(`^[a-zA-Z0-9-]+$`)
+var validManSection = regexp.MustCompile(ValidManSectionPattern)
 
 func GetManPage(ctx context.Context, req *mcp.CallToolRequest, params *GetManPageParams) (*mcp.CallToolResult, any, error) {
 	if params.Name == "" {
@@ -166,12 +171,17 @@ func GetManPage(ctx context.Context, req *mcp.CallToolRequest, params *GetManPag
 	}
 
 	section := params.Section
-	if section == 0 {
-		section = 1
+	if section == "" {
+		section = "1"
+	}
+
+	// Validate section contains only alphanumeric characters
+	if !validManSection.MatchString(section) {
+		return nil, nil, fmt.Errorf("invalid man page section: %s (only a-z, A-Z, and 0-9 are allowed)", section)
 	}
 
 	// Try with specific section first: man 1 ls
-	cmd := exec.Command("man", fmt.Sprint(section), params.Name)
+	cmd := exec.Command("man", section, params.Name)
 	cmd.Env = append(cmd.Environ(), "COLUMNS=80", "MAN_POSIXLY_CORRECT=1")
 
 	var out bytes.Buffer
@@ -194,7 +204,7 @@ func GetManPage(ctx context.Context, req *mcp.CallToolRequest, params *GetManPag
 			if errMsg == "" {
 				errMsg = err.Error()
 			}
-			return nil, nil, fmt.Errorf("failed to get man page for %s(%d): %s", params.Name, section, errMsg)
+			return nil, nil, fmt.Errorf("failed to get man page for %s(%s): %s", params.Name, section, errMsg)
 		}
 		// Fallback succeeded
 		out = outFallback

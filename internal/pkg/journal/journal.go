@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/coreos/go-systemd/v22/sdjournal"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	auth "github.com/openSUSE/systemd-mcp/authkeeper"
+	"github.com/openSUSE/systemd-mcp/internal/pkg/man"
 	"github.com/openSUSE/systemd-mcp/internal/pkg/sdjournalw"
 )
 
@@ -57,7 +57,7 @@ type LogOutput struct {
 
 type ManPage struct {
 	Name        string `json:"name"`
-	Section     uint   `json:"section"`
+	Section     string `json:"section"`
 	Description string `json:"description"`
 }
 
@@ -70,6 +70,8 @@ type ListLogResult struct {
 	Identifier    string      `json:"identifier,omitempty"`
 	UnitName      string      `json:"unit_name,omitempty"`
 }
+
+var validManSection = regexp.MustCompile(man.ValidManSectionPattern)
 
 func CreateListLogsSchema() *jsonschema.Schema {
 	inputSchema, _ := jsonschema.For[ListLogParams](nil)
@@ -515,27 +517,14 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 					matches := reMan.FindStringSubmatch(line)
 					if len(matches) == 4 {
 						secStr := matches[2]
-						secDigits := ""
-						for _, r := range secStr {
-							if r >= '0' && r <= '9' {
-								secDigits += string(r)
-							} else {
-								break
-							}
-						}
-
-						if secDigits == "" {
-							continue
-						}
-
-						sec, err := strconv.ParseUint(secDigits, 10, 32)
-						if err != nil {
+						// Validate section contains only alphanumeric characters
+						if !validManSection.MatchString(secStr) {
 							continue
 						}
 
 						res.Documentation = append(res.Documentation, ManPage{
 							Name:        matches[1],
-							Section:     uint(sec),
+							Section:     secStr,
 							Description: matches[3],
 						})
 					}
