@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/openSUSE/systemd-mcp/authkeeper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,10 +17,14 @@ import (
 func TestGetFile_Unit(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Create test auth with read permissions
+	testAuth, err := authkeeper.NewNoAuth(true, false)
+	require.NoError(t, err)
+
 	// Create a test file
 	testFilePath := filepath.Join(tmpDir, "test.txt")
 	content := "line1\nline2\nline3\n"
-	err := os.WriteFile(testFilePath, []byte(content), 0644)
+	err = os.WriteFile(testFilePath, []byte(content), 0644)
 	require.NoError(t, err)
 
 	// Create a test subdirectory
@@ -32,7 +37,7 @@ func TestGetFile_Unit(t *testing.T) {
 			Path:        testFilePath,
 			ShowContent: true,
 		}
-		res, _, err := GetFile(context.Background(), nil, params)
+		res, _, err := GetFile(context.Background(), nil, params, testAuth)
 		assert.NoError(t, err)
 		assert.NotNil(t, res)
 
@@ -51,7 +56,7 @@ func TestGetFile_Unit(t *testing.T) {
 		params := &GetFileParams{
 			Path: tmpDir,
 		}
-		res, _, err := GetFile(context.Background(), nil, params)
+		res, _, err := GetFile(context.Background(), nil, params, testAuth)
 		assert.NoError(t, err)
 
 		var result GetFileResult
@@ -66,7 +71,7 @@ func TestGetFile_Unit(t *testing.T) {
 		params := &GetFileParams{
 			Path: filepath.Join(tmpDir, "nonexistent"),
 		}
-		_, _, err := GetFile(context.Background(), nil, params)
+		_, _, err := GetFile(context.Background(), nil, params, testAuth)
 		assert.Error(t, err)
 	})
 }
