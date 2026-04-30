@@ -84,7 +84,7 @@ func getFileMetadata(ctx context.Context, path string, info os.FileInfo, fetchAC
 
 	if fetchACLs {
 		// Try to get ACLs
-		cmd := exec.CommandContext(ctx, "getfacl", "-p", path)
+		cmd := exec.CommandContext(ctx, "getfacl", "-p", "--", path)
 		out, err := cmd.Output()
 		if err == nil {
 			metadata.ACLs = string(out)
