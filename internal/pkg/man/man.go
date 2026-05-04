@@ -161,6 +161,13 @@ const (
 var validManName = regexp.MustCompile(`^[a-zA-Z0-9-]+$`)
 var validManSection = regexp.MustCompile(ValidManSectionPattern)
 
+// IsManAvailable checks if the man binary is available in PATH.
+// Returns true if man is found, false otherwise.
+func IsManAvailable() bool {
+	_, err := exec.LookPath("man")
+	return err == nil
+}
+
 func GetManPage(ctx context.Context, req *mcp.CallToolRequest, params *GetManPageParams) (*mcp.CallToolResult, any, error) {
 	if params.Name == "" {
 		return nil, nil, fmt.Errorf("man page name is required")
