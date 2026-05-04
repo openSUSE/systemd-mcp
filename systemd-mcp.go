@@ -227,25 +227,29 @@ func NewRootCmd() *cobra.Command {
 					},
 				})
 			}
-			tools = append(tools, struct {
-				Tool     *mcp.Tool
-				Register func(server *mcp.Server, tool *mcp.Tool)
-			}{
-				Tool: &mcp.Tool{
-					Title:       "Display man page",
-					Name:        "get_man_page",
-					Description: "Retrieve a man page. Supports filtering by section and chapters, and pagination.",
-					InputSchema: man.CreateManPageSchema(),
+			if man.IsManAvailable() {
+				tools = append(tools, struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "Display man page",
+						Name:        "get_man_page",
+						Description: "Retrieve a man page. Supports filtering by section and chapters, and pagination.",
+						InputSchema: man.CreateManPageSchema(),
+					},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, args *man.GetManPageParams) (*mcp.CallToolResult, any, error) {
+							slog.Debug("get_man_page called", "args", args)
+							res, out, err := man.GetManPage(ctx, req, args)
+							return res, out, err
+						})
+					},
 				},
-				Register: func(server *mcp.Server, tool *mcp.Tool) {
-					mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, args *man.GetManPageParams) (*mcp.CallToolResult, any, error) {
-						slog.Debug("get_man_page called", "args", args)
-						res, out, err := man.GetManPage(ctx, req, args)
-						return res, out, err
-					})
-				},
-			},
-			)
+				)
+			} else {
+				slog.Debug("man binary not found in PATH, skipping get_man_page tool")
+			}
 
 			var allTools []string
 			for _, tool := range tools {

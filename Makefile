@@ -12,7 +12,7 @@ DBUSDIR ?= $(DATADIR)/dbus-1/system.d
 POLKITDIR ?= $(DATADIR)/polkit-1/actions
 
 GO = go
-GOFLAGS = 
+GOFLAGS = -buildmode=pie
 
 .PHONY: all build test-client vendor test format lint clean dist install version
 
