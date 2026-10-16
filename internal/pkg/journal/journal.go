@@ -24,6 +24,7 @@ import (
 	"github.com/openSUSE/systemd-mcp/dbus"
 	"github.com/openSUSE/systemd-mcp/internal/pkg/man"
 	"github.com/openSUSE/systemd-mcp/internal/pkg/sdjournalw"
+	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
 )
 
 // how much of the journal the opened handle covers
@@ -48,6 +49,7 @@ func (log *HostLog) Close() error {
 }
 
 type ListLogParams struct {
+	Host      string    `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	Count     int       `json:"count,omitempty" jsonschema:"Number of log lines to output"`
 	Offset    int       `json:"offset,omitempty" jsonschema:"Number of newest log entries to skip for pagination"`
 	From      time.Time `json:"from,omitempty" jsonschema:"Start time for filtering logs"`
@@ -88,6 +90,7 @@ var validManSection = regexp.MustCompile(man.ValidManSectionPattern)
 
 func CreateListLogsSchema() *jsonschema.Schema {
 	inputSchema, _ := jsonschema.For[ListLogParams](nil)
+	inputSchema.Properties["host"].Default = json.RawMessage("\"localhost\"")
 	inputSchema.Properties["count"].Default = json.RawMessage(`100`)
 	inputSchema.Properties["offset"].Default = json.RawMessage(`0`)
 	// inputSchema.Properties["pattern"].Default = json.RawMessage(`""`)
@@ -334,6 +337,8 @@ func logResult(res ListLogResult) (*mcp.CallToolResult, any, error) {
 
 // get the lat log entries for a given unit, else just the last messages
 func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params *ListLogParams) (*mcp.CallToolResult, any, error) {
+	// 'localhost' is a synonym for the local machine, so resolve the effective host
+	slog.Debug("ListLog called", "resolved_host", util.HostName(params.Host))
 	// always init the host log via self initialization, not via init or
 	allowed, err := sj.self_init(ctx)
 	if err != nil {

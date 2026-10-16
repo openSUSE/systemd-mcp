@@ -97,6 +97,8 @@ To run the server in HTTP mode with TLS, you need a certificate and a key. You c
 
 # Functionality
 
+Every tool accepts a `host` argument that identifies the host on which the command runs. It defaults to `localhost`, which is a synonym for the local machine (`os.Hostname()`); any other value names the target host.
+
 Following tools are provided:
 * `list_units`: List systemd units. Filter by states (e.g. `running`, `failed`) or patterns. Can return detailed properties. Use `mode='files'` to list all installed unit files.
 * `change_unit_state`: Change the state of a unit or service (start, stop, restart, reload, enable, disable).

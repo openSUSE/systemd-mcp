@@ -199,6 +199,7 @@ func NewRootCmd() *cobra.Command {
 							Title:       "Check restart/reload status",
 							Name:        "check_restart_reload",
 							Description: "Check the reload or restart status of a unit. Can only be called if the restart or reload job timed out.",
+							InputSchema: systemd.GetRestsartReloadParamsSchema(),
 						},
 						Register: func(server *mcp.Server, tool *mcp.Tool) {
 							mcp.AddTool(server, tool, systemConn.CheckForRestartReloadRunning)

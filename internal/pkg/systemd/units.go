@@ -63,6 +63,7 @@ type UnitProperties struct {
 }
 
 type ListLoadedUnitsParams struct {
+	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	State              string   `json:"state,omitempty" jsonschema:"List units in this active/load state (e.g. 'active', 'failed'). Defaults to 'active'. Use 'all' to list all states. Note: SubStates like 'running', 'dead', 'mounted', 'plugged' are not supported - use the corresponding parent ActiveState instead (e.g., 'active' for running units, 'inactive' for dead units)."`
 	Patterns           []string `json:"patterns,omitempty" jsonschema:"List units by their names or patterns (e.g. '*.service')."`
 	Properties         bool     `json:"properties,omitempty" jsonschema:"If true, return detailed properties for each unit."`
@@ -77,6 +78,9 @@ func CreateListLoadedUnitsSchema() *jsonschema.Schema {
 		states = append(states, s)
 	}
 
+	if inputSchema.Properties["host"] != nil {
+		inputSchema.Properties["host"].Default = json.RawMessage("\"localhost\"")
+	}
 	if inputSchema.Properties["state"] != nil {
 		inputSchema.Properties["state"].Enum = states
 		inputSchema.Properties["state"].Default = json.RawMessage("\"active\"")
@@ -199,6 +203,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 }
 
 type ListUnitFilesParams struct {
+	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	State              string   `json:"state,omitempty" jsonschema:"List unit files in this enablement state (e.g. 'enabled', 'disabled'). Defaults to 'enabled'. Use 'all' to list all states."`
 	Patterns           []string `json:"patterns,omitempty" jsonschema:"List unit files by their names or patterns (e.g. '*.service'). If empty all unit file are listed."`
 	IncludeDescription bool     `json:"include_description,omitempty" jsonschema:"If true, include the description for each unit."`
@@ -211,6 +216,9 @@ func CreateListUnitFilesSchema() *jsonschema.Schema {
 		states = append(states, s)
 	}
 
+	if inputSchema.Properties["host"] != nil {
+		inputSchema.Properties["host"].Default = json.RawMessage("\"localhost\"")
+	}
 	if inputSchema.Properties["state"] != nil {
 		inputSchema.Properties["state"].Enum = states
 		inputSchema.Properties["state"].Default = json.RawMessage("\"enabled\"")
@@ -342,6 +350,7 @@ func (conn *Connection) ListStatesHandler(ctx context.Context) (lst []string, er
 }
 
 type RestartReloadParams struct {
+	Host         string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	Name         string `json:"name" jsonschema:"Exact name of unit to restart"`
 	TimeOut      uint   `json:"timeout,omitempty" jsonschema:"Time to wait for the restart or reload to finish. After the timeout the function will return and restart and reload will run in the background and the result can be retreived with a separate function."`
 	Mode         string `json:"mode,omitempty" jsonschema:"Mode used for the restart or reload. 'replace' should be used."`
@@ -355,17 +364,17 @@ func ValidRestartModes() []string {
 
 const MaxTimeOut uint = 60
 
-func GetRestsartReloadParamsSchema() (*jsonschema.Schema, error) {
-	schema, err := jsonschema.For[RestartReloadParams](nil)
-	if err != nil {
-		return nil, err
-	}
+func GetRestsartReloadParamsSchema() *jsonschema.Schema {
+	schema, _ := jsonschema.For[RestartReloadParams](nil)
 	validList := []any{}
 	for _, s := range ValidRestartModes() {
 		validList = append(validList, any(s))
 	}
 	schema.Properties["mode"].Enum = validList
-	return schema, nil
+	if schema.Properties["host"] != nil {
+		schema.Properties["host"].Default = json.RawMessage("\"localhost\"")
+	}
+	return schema
 }
 
 type CheckReloadRestartParams struct {
@@ -412,6 +421,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 }
 
 type ChangeUnitStateParams struct {
+	Host    string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	Name    string `json:"name" jsonschema:"Exact name of unit to change state"`
 	Action  string `json:"action" jsonschema:"Action to perform."`
 	Mode    string `json:"mode,omitempty" jsonschema:"Mode when restarting a unit. Defaults to 'replace'."`
@@ -442,12 +452,17 @@ func CreateChangeInputSchema() *jsonschema.Schema {
 	inputSchmema.Properties["mode"].Enum = modes
 	inputSchmema.Properties["mode"].Default = json.RawMessage("\"replace\"")
 	inputSchmema.Properties["timeout"].Default = json.RawMessage("30")
+	if inputSchmema.Properties["host"] != nil {
+		inputSchmema.Properties["host"].Default = json.RawMessage("\"localhost\"")
+	}
 
 	return inputSchmema
 }
 
 func (conn *Connection) ChangeUnitState(ctx context.Context, req *mcp.CallToolRequest, params *ChangeUnitStateParams) (res *mcp.CallToolResult, _ any, err error) {
-	slog.Debug("ChangeUnitState called", "params", params)
+	// 'localhost' is a synonym for the local machine, so resolve the effective host here
+	resolvedHost := util.HostName(params.Host)
+	slog.Debug("ChangeUnitState called", "params", params, "resolved_host", resolvedHost)
 
 	var permission string
 	if params.Action == "enable" || params.Action == "enable_force" || params.Action == "disable" {
