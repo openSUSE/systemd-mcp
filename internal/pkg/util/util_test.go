@@ -1,9 +1,32 @@
 package util
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
+
+func TestHostName(t *testing.T) {
+	local, _ := os.Hostname()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty resolves to local hostname", in: "", want: local},
+		{name: "localhost resolves to local hostname", in: "localhost", want: local},
+		{name: "LOCALHOST is case-insensitive", in: "LOCALHOST", want: local},
+		{name: "other host is returned unchanged", in: "remotehost", want: "remotehost"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HostName(tt.in); got != tt.want {
+				t.Errorf("HostName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestClearMap(t *testing.T) {
 	tests := []struct {

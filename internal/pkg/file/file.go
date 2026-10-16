@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	auth "github.com/openSUSE/systemd-mcp/authkeeper"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
@@ -17,9 +18,11 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
 )
 
 type GetFileParams struct {
+	Host        string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	Path        string `json:"path" jsonschema:"Absolute path to the file"`
 	ShowContent bool   `json:"show_content,omitempty" jsonschema:"Whether to show file content. Defaults to false."`
 	Offset      int    `json:"offset,omitempty" jsonschema:"Line offset for pagination. Defaults to 0."`
@@ -48,6 +51,7 @@ type GetFileResult struct {
 
 func CreateFileSchema() *jsonschema.Schema {
 	inputSchema, _ := jsonschema.For[GetFileParams](nil)
+	inputSchema.Properties["host"].Default = json.RawMessage("\"localhost\"")
 	inputSchema.Properties["limit"].Default = json.RawMessage(`1000`)
 	inputSchema.Properties["offset"].Default = json.RawMessage(`0`)
 	inputSchema.Properties["show_content"].Default = json.RawMessage(`false`)
@@ -101,6 +105,8 @@ func GetFile(ctx context.Context, req *mcp.CallToolRequest, params *GetFileParam
 	} else if !allowed {
 		return nil, nil, fmt.Errorf("calling method was canceled by user")
 	}
+	// 'localhost' is a synonym for the local machine, so resolve the effective host
+	slog.Debug("GetFile called", "resolved_host", util.HostName(params.Host), "path", params.Path)
 	info, err := os.Stat(params.Path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to stat file: %w", err)

@@ -14,6 +14,7 @@ import (
 )
 
 type GetManPageParams struct {
+	Host     string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	Name     string   `json:"name" jsonschema:"Name of the man page"`
 	Section  string   `json:"section,omitempty" jsonschema:"Section of the man page (default 1, e.g., 1, 8, 8p, 3perl)"`
 	Offset   int      `json:"offset,omitempty" jsonschema:"Line offset for pagination"`
@@ -53,6 +54,7 @@ type ManPageResult struct {
 
 func CreateManPageSchema() *jsonschema.Schema {
 	inputSchema, _ := jsonschema.For[GetManPageParams](nil)
+	inputSchema.Properties["host"].Default = json.RawMessage("\"localhost\"")
 	inputSchema.Properties["limit"].Default = json.RawMessage(`2000`)
 	inputSchema.Properties["section"].Default = json.RawMessage(`"1"`)
 	return inputSchema

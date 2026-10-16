@@ -2,9 +2,24 @@ package util
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 
 	"github.com/alpkeskin/gotoon"
 )
+
+// HostName resolves a host argument to a concrete hostname.
+// An empty value and "localhost" are synonyms for the local machine, so they
+// are replaced with os.Hostname(). Any other value is returned unchanged.
+func HostName(host string) string {
+	if host == "" || strings.EqualFold(host, "localhost") {
+		if h, err := os.Hostname(); err == nil && h != "" {
+			return h
+		}
+		return "localhost"
+	}
+	return host
+}
 
 /*
 cleans a map from emty strng or string slices with length 0
