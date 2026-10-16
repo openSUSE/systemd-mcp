@@ -390,22 +390,29 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	// keep flags in the order below so they appear grouped in --help
+	rootCmd.Flags().SortFlags = false
+
+	// connection (HTTP server, optional TLS)
 	rootCmd.Flags().String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
-	rootCmd.Flags().Bool("skip-tls-verify", false, "Skip TLS certificate verification for outbound requests (e.g. to OAuth2 controller)")
-	rootCmd.Flags().BoolVar(&useToon, "toon", false, "use token optimized object notation")
-	rootCmd.Flags().String("logfile", "", "if set, log to this file instead of stderr")
+	rootCmd.Flags().String("cert-file", "", "Path to server certificate file (PEM format) for TLS. Requires --key-file")
+	rootCmd.Flags().String("key-file", "", "Path to server private key file (PEM format) for TLS. Requires --cert-file")
+	// authentication
+	rootCmd.Flags().String("noauth", "", fmt.Sprintf("Disable authorization via dbus/oauth2, this parameter has to be set to %s to work.", magicNoauth))
 	rootCmd.Flags().String("controller", "", "oauth2 controller address")
+	rootCmd.Flags().Bool("skip-tls-verify", false, "Skip TLS certificate verification for outbound requests (e.g. to OAuth2 controller)")
+	rootCmd.Flags().Uint32("timeout", 5, "Set the timeout for authentication in seconds")
+	rootCmd.Flags().BoolP("allow-write", "w", false, "Authorize write to systemd or allow pending write if started without write")
+	rootCmd.Flags().BoolP("allow-read", "r", false, "Authorize read to systemd or allow pending read if started without read")
+	// logging
 	rootCmd.Flags().BoolP("verbose", "v", false, "Enable verbose logging")
 	rootCmd.Flags().BoolP("debug", "d", false, "Enable debug logging")
 	rootCmd.Flags().Bool("log-json", false, "Output logs in JSON format (machine-readable)")
+	rootCmd.Flags().String("logfile", "", "if set, log to this file instead of stderr")
+	// tools and output
 	rootCmd.Flags().Bool("list-tools", false, "List all available tools and exit")
-	rootCmd.Flags().BoolP("allow-write", "w", false, "Authorize write to systemd or allow pending write if started without write")
-	rootCmd.Flags().BoolP("allow-read", "r", false, "Authorize read to systemd or allow pending read if started without read")
 	rootCmd.Flags().StringSlice("enabled-tools", nil, "A list of tools to enable. Defaults to all tools.")
-	rootCmd.Flags().Uint32("timeout", 5, "Set the timeout for authentication in seconds")
-	rootCmd.Flags().String("noauth", "", fmt.Sprintf("Disable authorization via dbus/oauth2, this parameter has to be set to %s to work.", magicNoauth))
-	rootCmd.Flags().String("cert-file", "", "Path to server certificate file (PEM format) for TLS. Requires --key-file")
-	rootCmd.Flags().String("key-file", "", "Path to server private key file (PEM format) for TLS. Requires --cert-file")
+	rootCmd.Flags().BoolVar(&useToon, "toon", false, "use token optimized object notation")
 
 	rootCmd.MarkFlagsRequiredTogether("cert-file", "key-file")
 	rootCmd.MarkFlagsMutuallyExclusive("noauth", "controller")
