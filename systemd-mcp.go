@@ -145,9 +145,11 @@ func NewRootCmd() *cobra.Command {
 			}
 			defer systemConn.Close()
 
-			localBusOK := true
+			// The local bus is opened when possible. When it isn't (e.g. a
+			// container without dbus), the local tools stay registered but return
+			// a clear "local system bus is not available" error, so remote hosts
+			// (via set_host) remain the only operable endpoints.
 			if err := systemConn.ConnectLocal(context.Background()); err != nil {
-				localBusOK = false
 				slog.Warn("local system bus unavailable; only remote hosts (via set_host) are operable", slog.Any("error", err))
 			}
 
@@ -156,67 +158,65 @@ func NewRootCmd() *cobra.Command {
 				Register func(server *mcp.Server, tool *mcp.Tool)
 			}{}
 
-			if localBusOK {
-				tools = append(
-					tools,
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "List loaded units",
-							Name:        "list_loaded_units",
-							Description: fmt.Sprintf("List systemd units that are currently loaded in memory. Filter by states (%v) or patterns. Can return detailed properties.", systemd.ValidStates()),
-							InputSchema: systemd.CreateListLoadedUnitsSchema(),
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.ListLoadedUnits)
-						},
+			tools = append(
+				tools,
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "List loaded units",
+						Name:        "list_loaded_units",
+						Description: fmt.Sprintf("List systemd units that are currently loaded in memory. Filter by states (%v) or patterns. Can return detailed properties.", systemd.ValidStates()),
+						InputSchema: systemd.CreateListLoadedUnitsSchema(),
 					},
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "List unit files",
-							Name:        "list_unit_files",
-							Description: fmt.Sprintf("List all systemd unit files on disk. Filter by enablement states (%v) or patterns.", systemd.ValidUnitFileStates()),
-							InputSchema: systemd.CreateListUnitFilesSchema(),
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.ListUnitFiles)
-						},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.ListLoadedUnits)
 					},
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "Change unit state",
-							Name:        "change_unit_state",
-							Description: "Change the state of a unit or service (start, stop, restart, reload, enable, disable).",
-							InputSchema: systemd.CreateChangeInputSchema(),
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.ChangeUnitState)
-						},
+				},
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "List unit files",
+						Name:        "list_unit_files",
+						Description: fmt.Sprintf("List all systemd unit files on disk. Filter by enablement states (%v) or patterns.", systemd.ValidUnitFileStates()),
+						InputSchema: systemd.CreateListUnitFilesSchema(),
 					},
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "Check restart/reload status",
-							Name:        "check_restart_reload",
-							Description: "Check the reload or restart status of a unit. Can only be called if the restart or reload job timed out.",
-							InputSchema: systemd.GetRestsartReloadParamsSchema(),
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.CheckForRestartReloadRunning)
-						},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.ListUnitFiles)
 					},
-				)
-			}
+				},
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "Change unit state",
+						Name:        "change_unit_state",
+						Description: "Change the state of a unit or service (start, stop, restart, reload, enable, disable).",
+						InputSchema: systemd.CreateChangeInputSchema(),
+					},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.ChangeUnitState)
+					},
+				},
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "Check restart/reload status",
+						Name:        "check_restart_reload",
+						Description: "Check the reload or restart status of a unit. Can only be called if the restart or reload job timed out.",
+						InputSchema: systemd.GetRestsartReloadParamsSchema(),
+					},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.CheckForRestartReloadRunning)
+					},
+				},
+			)
 
 			// The host-management tool is always available, even when the local
 			// bus could not be opened, so hosts can still be registered and
