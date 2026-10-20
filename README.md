@@ -42,6 +42,8 @@ When running over Stdio (default), `systemd-mcp` uses `polkit` for authorization
 
     Read operations over the stdio transport are always authorized, as the calling user runs the server itself; only write operations still trigger a polkit request.
 
+    If the system D-Bus is not available (e.g. a container without systemd), `systemd-mcp` starts up in an unauthenticated fallback mode instead of exiting: reads are always allowed and write operations are not gated by polkit. Local tools then report that the local system bus is unavailable, while remote hosts registered via `set_host` remain fully operable.
+
 ## HTTP Transport (OAuth2)
 
 When running over HTTP (using `--http`), `systemd-mcp` uses OAuth2 for authorization.

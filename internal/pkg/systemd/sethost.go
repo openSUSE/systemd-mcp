@@ -11,9 +11,9 @@ import (
 )
 
 const setHostDescription = `Manage the bus hosts the other tools can operate on.
-Actions: 'register' adds a remote host (needs target and SSH auth),
-'unregister' removes a remote host, and 'list' reports the known hosts.
-The local host is always available as 'localhost'.`
+Actions: 'register' adds a remote host, 'unregister' removes a remote host, and 'list' reports the known hosts.
+'register' is equivalent to establishing an SSH connection to that host: you supply the SSH target (host[:port]) and authentication (user, key_file or password), and the tools reach its D-Bus system bus over SSH from then on (think 'ssh user@host').
+The local host is always available as 'localhost' and needs no registration.`
 
 // SetHostDescription is the human/tool description for the set_host tool.
 func SetHostDescription() string {
@@ -55,6 +55,7 @@ func (conn *Connection) SetHost(ctx context.Context, _ *mcp.CallToolRequest, par
 			Target:     params.Target,
 			User:       params.User,
 			KeyFile:    params.KeyFile,
+			Password:   params.Password,
 			KnownHosts: params.KnownHosts,
 			Insecure:   params.Insecure,
 			RemoteCmd:  params.RemoteCmd,

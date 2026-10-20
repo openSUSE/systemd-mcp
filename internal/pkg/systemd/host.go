@@ -28,8 +28,9 @@ type HostInfo struct {
 	Target     string `json:"target,omitempty" jsonschema:"SSH target host[:port] (default port 22). Required for remote hosts."`
 	User       string `json:"user,omitempty" jsonschema:"SSH user (defaults to the $USER environment variable)." `
 	KeyFile    string `json:"key_file,omitempty" jsonschema:"Path to an SSH private key file (the local ssh-agent is also consulted)." `
+	Password   string `json:"-" jsonschema:"SSH password (used when no key/agent auth is available). Intentionally omitted from list output."`
 	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to a known_hosts file (or ~/.ssh/known_hosts) for host-key verification."`
-	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Accept any SSH host key (testing only; key-based auth still required)." `
+	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Accept any SSH host key (testing only)."`
 	RemoteCmd  string `json:"remote_cmd,omitempty" jsonschema:"Command to run on the remote host (default 'systemd-stdio-bridge')." `
 }
 
@@ -49,6 +50,7 @@ type SetHostParams struct {
 	Target     string `json:"target,omitempty" jsonschema:"SSH target host[:port] (default port 22); required for remote registration."`
 	User       string `json:"user,omitempty" jsonschema:"SSH user (defaults to $USER)."`
 	KeyFile    string `json:"key_file,omitempty" jsonschema:"Path to an SSH private key file (ssh-agent is also consulted)."`
+	Password   string `json:"password,omitempty" jsonschema:"SSH password (optional; an alternative to key/agent auth)." `
 	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to a known_hosts file for host-key verification."`
 	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Accept any SSH host key (testing only)."`
 	RemoteCmd  string `json:"remote_cmd,omitempty" jsonschema:"Command to run on the remote host (default 'systemd-stdio-bridge')."`

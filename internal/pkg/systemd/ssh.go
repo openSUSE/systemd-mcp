@@ -45,7 +45,7 @@ func (r *Registry) Get(name string) (HostInfo, error) {
 // PreconfigureHosts adds remote hosts supplied at server startup.
 // Each entry is:
 //
-//	name:target[,user=U][,key_file=K][,known_hosts=F][,insecure][,remote_cmd=C]
+//	name:target[,user=U][,key_file=K][,password=P][,known_hosts=F][,insecure][,remote_cmd=C]
 //
 // The name and target are the first comma-separated token (the target may itself
 // be host:port); the optional SSH details follow as comma-separated tokens.
@@ -78,6 +78,8 @@ func PreconfigureHosts(r *Registry, entries []string) error {
 				info.User = strings.TrimSpace(strings.TrimPrefix(tok, "user="))
 			case strings.HasPrefix(tok, "key_file="):
 				info.KeyFile = strings.TrimSpace(strings.TrimPrefix(tok, "key_file="))
+			case strings.HasPrefix(tok, "password="):
+				info.Password = strings.TrimSpace(strings.TrimPrefix(tok, "password="))
 			case strings.HasPrefix(tok, "known_hosts="):
 				info.KnownHosts = strings.TrimSpace(strings.TrimPrefix(tok, "known_hosts="))
 			case strings.HasPrefix(tok, "remote_cmd="):
@@ -177,8 +179,9 @@ func dialRemote(ctx context.Context, h HostInfo) (DbusConnection, error) {
 }
 
 // sshClientConfig builds an SSH client config for h: it consults the local
-// ssh-agent first, then any explicit key file; host-key verification uses the
-// provided (or ~/.ssh/known_hosts) file unless Insecure is set.
+// ssh-agent first, then any explicit key file, and offers a password when one
+// is registered for the host; host-key verification uses the provided (or
+// ~/.ssh/known_hosts) file unless Insecure is set.
 func sshClientConfig(h HostInfo) (*ssh.ClientConfig, error) {
 	cfg := &ssh.ClientConfig{
 		Timeout: 10 * time.Second,
@@ -211,10 +214,15 @@ func sshClientConfig(h HostInfo) (*ssh.ClientConfig, error) {
 			}
 		}
 	}
-	if len(signers) == 0 {
-		return nil, fmt.Errorf("no SSH key available for host %q: provide key_file or run ssh-add (passphrase-protected keys must be loaded into the agent)", h.Name)
+	if len(signers) > 0 {
+		cfg.Auth = append(cfg.Auth, ssh.PublicKeys(signers...))
 	}
-	cfg.Auth = []ssh.AuthMethod{ssh.PublicKeys(signers...)}
+	if h.Password != "" {
+		cfg.Auth = append(cfg.Auth, ssh.Password(h.Password))
+	}
+	if len(cfg.Auth) == 0 {
+		return nil, fmt.Errorf("no SSH auth available for host %q: provide key_file or run ssh-add, or register the host with a password", h.Name)
+	}
 
 	if h.Insecure {
 		cfg.HostKeyCallback = ssh.InsecureIgnoreHostKey() // testing only

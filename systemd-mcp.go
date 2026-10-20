@@ -112,7 +112,9 @@ func NewRootCmd() *cobra.Command {
 			} else {
 				authorization, err = authkeeper.NewPolkitAuth(DBusName, DBusPath, viper.GetUint32("timeout"))
 				if err != nil {
-					return fmt.Errorf("failed to setup dbus: %w", err)
+					slog.Warn("polkit based auth is not available, so write operations are not authorized via polkit",
+						slog.Any("error", err))
+					authorization, err = authkeeper.NewNoAuth(true, true)
 				}
 			}
 			defer authorization.Close()
