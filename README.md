@@ -97,15 +97,24 @@ To run the server in HTTP mode with TLS, you need a certificate and a key. You c
 
 # Functionality
 
-Every tool accepts a `host` argument that identifies the host on which the command runs. It defaults to `localhost`, which is a synonym for the local machine (`os.Hostname()`); any other value names the target host.
+Every tool accepts a `host` argument that selects the bus endpoint the command runs on: `localhost`, a synonym for the local machine (`os.Hostname()`), or a remote host that has been registered. Remote hosts use the same mechanism `systemctl -H`/`busctl -H` use: each connection is an SSH session running `systemd-stdio-bridge`, so the D-Bus bytes ride a single SSH channel.
 
 Following tools are provided:
+* `set_host`: Manage bus hosts — `register` a remote host (SSH target + auth), `unregister` a remote host, and `list` the known hosts. The local host is always available as `localhost`.
 * `list_units`: List systemd units. Filter by states (e.g. `running`, `failed`) or patterns. Can return detailed properties. Use `mode='files'` to list all installed unit files.
 * `change_unit_state`: Change the state of a unit or service (start, stop, restart, reload, enable, disable).
 * `check_restart_reload`: Check the reload or restart status of a unit. Can only be called if the restart or reload job timed out.
 * `list_log`: Get the last log entries for the given service or unit.
 * `get_file`: Read a file from the system. Can show content and metadata. Supports pagination for large files.
 * `get_man_page`: Retrieve a man page. Supports filtering by section and chapters, and pagination.
+
+Remote hosts can be registered at runtime with `set_host`, or preconfigured at startup:
+
+```
+systemd-mcp \
+  --remote-hosts 'web1:10.0.0.5,user=admin,key_file=~/.ssh/id_ed25519' \
+  --remote-hosts 'db1:10.0.0.7:2222,known_hosts=~/.ssh/known_hosts'
+```
 
 # Testing
 

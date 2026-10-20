@@ -63,7 +63,7 @@ type UnitProperties struct {
 }
 
 type ListLoadedUnitsParams struct {
-	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
+	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
 	State              string   `json:"state,omitempty" jsonschema:"List units in this active/load state (e.g. 'active', 'failed'). Defaults to 'active'. Use 'all' to list all states. Note: SubStates like 'running', 'dead', 'mounted', 'plugged' are not supported - use the corresponding parent ActiveState instead (e.g., 'active' for running units, 'inactive' for dead units)."`
 	Patterns           []string `json:"patterns,omitempty" jsonschema:"List units by their names or patterns (e.g. '*.service')."`
 	Properties         bool     `json:"properties,omitempty" jsonschema:"If true, return detailed properties for each unit."`
@@ -89,29 +89,6 @@ func CreateListLoadedUnitsSchema() *jsonschema.Schema {
 	return inputSchema
 }
 
-// hostMessage wraps a plain status message with the actual host, so even terse
-// results keep the host they were produced on.
-func hostMessage(message string) string {
-	b, err := json.Marshal(map[string]any{
-		"host":    util.LocalHostName(),
-		"message": message,
-	})
-	if err != nil {
-		return `{"host":"localhost","message":"` + message + `"}`
-	}
-	return string(b)
-}
-
-// hostOnly returns a payload with just the actual host, for calls that produce
-// no other data.
-func hostOnly() string {
-	b, err := json.Marshal(map[string]any{"host": util.LocalHostName()})
-	if err != nil {
-		return `{"host":"localhost"}`
-	}
-	return string(b)
-}
-
 func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRequest, params *ListLoadedUnitsParams) (*mcp.CallToolResult, any, error) {
 	slog.Debug("ListLoadedUnits called", "params", params)
 	if allowed, err := conn.auth.IsReadAuthorized(ctx); err != nil {
@@ -119,6 +96,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 	} else if !allowed {
 		return nil, nil, fmt.Errorf("calling method was canceled by user")
 	}
+	host := params.Host
 
 	var reqStates []string
 
@@ -132,102 +110,104 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 		reqStates = []string{"active"}
 	}
 
-	units, err := conn.dbus.ListUnitsByPatternsContext(ctx, reqStates, params.Patterns)
-	if err != nil {
-		return nil, nil, err
-	}
+	return conn.withConn(ctx, host, func(dc DbusConnection, _ chan string) (*mcp.CallToolResult, any, error) {
+		units, err := dc.ListUnitsByPatternsContext(ctx, reqStates, params.Patterns)
+		if err != nil {
+			return nil, nil, err
+		}
 
-	txtContentList := []mcp.Content{}
+		txtContentList := []mcp.Content{}
 
-	if params.Properties {
-		for _, u := range units {
-			props, err := conn.dbus.GetAllPropertiesContext(ctx, u.Name)
-			if err != nil {
-				slog.Warn("failed to get properties for unit", "unit", u.Name, "error", err)
-				continue
-			}
-			props = util.ClearMap(props)
-
-			var jsonByte []byte
-			if params.Verbose {
-				jsonByte, err = util.EncodeWithHost(conn.Encoder, &props)
-			} else {
-				prop := UnitProperties{}
-				tmp, _ := json.Marshal(props)
-				if err := json.Unmarshal(tmp, &prop); err != nil {
-					slog.Warn("failed to unmarshal properties", "unit", u.Name, "error", err)
+		if params.Properties {
+			for _, u := range units {
+				props, err := dc.GetAllPropertiesContext(ctx, u.Name)
+				if err != nil {
+					slog.Warn("failed to get properties for unit", "unit", u.Name, "error", err)
 					continue
 				}
-				jsonByte, err = util.EncodeWithHost(conn.Encoder, &prop)
+				props = util.ClearMap(props)
+
+				var jsonByte []byte
+				if params.Verbose {
+					jsonByte, err = EncodeWithHost(conn.Encoder, host, &props)
+				} else {
+					prop := UnitProperties{}
+					tmp, _ := json.Marshal(props)
+					if err := json.Unmarshal(tmp, &prop); err != nil {
+						slog.Warn("failed to unmarshal properties", "unit", u.Name, "error", err)
+						continue
+					}
+					jsonByte, err = EncodeWithHost(conn.Encoder, host, &prop)
+				}
+				if err != nil {
+					return nil, nil, err
+				}
+				txtContentList = append(txtContentList, &mcp.TextContent{
+					Text: string(jsonByte),
+				})
 			}
-			if err != nil {
-				return nil, nil, err
+		} else if params.Verbose {
+			for _, u := range units {
+				jsonByte, err := EncodeWithHost(conn.Encoder, host, &u)
+				if err != nil {
+					return nil, nil, err
+				}
+				txtContentList = append(txtContentList, &mcp.TextContent{
+					Text: string(jsonByte),
+				})
 			}
-			txtContentList = append(txtContentList, &mcp.TextContent{
-				Text: string(jsonByte),
-			})
-		}
-	} else if params.Verbose {
-		for _, u := range units {
-			jsonByte, err := util.EncodeWithHost(conn.Encoder, &u)
-			if err != nil {
-				return nil, nil, err
+		} else {
+			groups := make(map[string][]any)
+			for _, u := range units {
+				var unitData any
+				if params.IncludeDescription {
+					unitData = struct {
+						Name        string `json:"name"`
+						Description string `json:"description"`
+					}{Name: u.Name, Description: u.Description}
+				} else {
+					unitData = u.Name
+				}
+				groups[u.ActiveState] = append(groups[u.ActiveState], unitData)
 			}
-			txtContentList = append(txtContentList, &mcp.TextContent{
-				Text: string(jsonByte),
-			})
-		}
-	} else {
-		groups := make(map[string][]any)
-		for _, u := range units {
-			var unitData any
-			if params.IncludeDescription {
-				unitData = struct {
-					Name        string `json:"name"`
-					Description string `json:"description"`
-				}{Name: u.Name, Description: u.Description}
-			} else {
-				unitData = u.Name
+
+			// Sort keys for consistent output
+			states := make([]string, 0, len(groups))
+			for s := range groups {
+				states = append(states, s)
 			}
-			groups[u.ActiveState] = append(groups[u.ActiveState], unitData)
+			slices.Sort(states)
+
+			for _, state := range states {
+				res := struct {
+					Host  string `json:"host"`
+					State string `json:"state"`
+					Units any    `json:"units"`
+				}{Host: effectiveHost(host), State: state, Units: groups[state]}
+				jsonByte, err := conn.Encoder.Encode(res)
+				if err != nil {
+					return nil, nil, err
+				}
+				txtContentList = append(txtContentList, &mcp.TextContent{
+					Text: string(jsonByte),
+				})
+			}
 		}
 
-		// Sort keys for consistent output
-		states := make([]string, 0, len(groups))
-		for s := range groups {
-			states = append(states, s)
+		if len(txtContentList) == 0 {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: hostOnly(host)}},
+			}, nil, nil
 		}
-		slices.Sort(states)
 
-		for _, state := range states {
-			res := struct {
-				Host  string `json:"host"`
-				State string `json:"state"`
-				Units any    `json:"units"`
-			}{Host: util.LocalHostName(), State: state, Units: groups[state]}
-			jsonByte, err := conn.Encoder.Encode(res)
-			if err != nil {
-				return nil, nil, err
-			}
-			txtContentList = append(txtContentList, &mcp.TextContent{
-				Text: string(jsonByte),
-			})
-		}
-	}
-
-	if len(txtContentList) == 0 {
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: hostOnly()}},
+			Content: txtContentList,
 		}, nil, nil
-	}
-
-	return &mcp.CallToolResult{
-		Content: txtContentList,
-	}, nil, nil
+	})
 }
 
 type ListUnitFilesParams struct {
-	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
+	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
 	State              string   `json:"state,omitempty" jsonschema:"List unit files in this enablement state (e.g. 'enabled', 'disabled'). Defaults to 'enabled'. Use 'all' to list all states."`
 	Patterns           []string `json:"patterns,omitempty" jsonschema:"List unit files by their names or patterns (e.g. '*.service'). If empty all unit file are listed."`
 	IncludeDescription bool     `json:"include_description,omitempty" jsonschema:"If true, include the description for each unit."`
@@ -258,96 +238,100 @@ func (conn *Connection) ListUnitFiles(ctx context.Context, req *mcp.CallToolRequ
 	} else if !allowed {
 		return nil, nil, fmt.Errorf("calling method was canceled by user")
 	}
-	unitList, err := conn.dbus.ListUnitFilesContext(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
+	host := params.Host
 
-	txtContentList := []mcp.Content{}
-	// Prepare filters
-	filterPatterns := len(params.Patterns) > 0
-
-	groups := make(map[string][]any)
-
-	for _, unit := range unitList {
-		name := path.Base(unit.Path)
-		state := unit.Type // In ListUnitFiles, Type corresponds to enablement state
-
-		// Filter by state
-		filterState := params.State
-		if filterState == "" {
-			// Default to enabled when no state is specified
-			filterState = "enabled"
-		}
-		if filterState != "all" {
-			if filterState != state {
-				continue
-			}
-		}
-
-		// Filter by pattern
-		if filterPatterns {
-			matched := false
-			for _, pat := range params.Patterns {
-				if match, _ := path.Match(pat, name); match {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
-
-		var unitData any
-		if params.IncludeDescription {
-			description := ""
-			props, err := conn.dbus.GetAllPropertiesContext(ctx, name)
-			if err == nil {
-				if d, ok := props["Description"].(string); ok {
-					description = d
-				}
-			}
-			unitData = struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-			}{Name: name, Description: description}
-		} else {
-			unitData = name
-		}
-		groups[state] = append(groups[state], unitData)
-	}
-
-	// Sort keys for consistent output
-	states := make([]string, 0, len(groups))
-	for s := range groups {
-		states = append(states, s)
-	}
-	slices.Sort(states)
-
-	for _, state := range states {
-		res := struct {
-			Host  string `json:"host"`
-			State string `json:"state"`
-			Units any    `json:"units"`
-		}{Host: util.LocalHostName(), State: state, Units: groups[state]}
-		jsonByte, err := json.Marshal(res)
+	return conn.withConn(ctx, host, func(dc DbusConnection, _ chan string) (*mcp.CallToolResult, any, error) {
+		unitList, err := dc.ListUnitFilesContext(ctx)
 		if err != nil {
-			return nil, nil, fmt.Errorf("could not unmarshall result: %w", err)
+			return nil, nil, err
 		}
-		txtContentList = append(txtContentList, &mcp.TextContent{
-			Text: string(jsonByte),
-		})
-	}
-	if len(txtContentList) == 0 {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: hostOnly()}},
-		}, nil, nil
-	}
 
-	return &mcp.CallToolResult{
-		Content: txtContentList,
-	}, nil, nil
+		txtContentList := []mcp.Content{}
+		// Prepare filters
+		filterPatterns := len(params.Patterns) > 0
+
+		groups := make(map[string][]any)
+
+		for _, unit := range unitList {
+			name := path.Base(unit.Path)
+			state := unit.Type // In ListUnitFiles, Type corresponds to enablement state
+
+			// Filter by state
+			filterState := params.State
+			if filterState == "" {
+				// Default to enabled when no state is specified
+				filterState = "enabled"
+			}
+			if filterState != "all" {
+				if filterState != state {
+					continue
+				}
+			}
+
+			// Filter by pattern
+			if filterPatterns {
+				matched := false
+				for _, pat := range params.Patterns {
+					if match, _ := path.Match(pat, name); match {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+
+			var unitData any
+			if params.IncludeDescription {
+				description := ""
+				props, err := dc.GetAllPropertiesContext(ctx, name)
+				if err == nil {
+					if d, ok := props["Description"].(string); ok {
+						description = d
+					}
+				}
+				unitData = struct {
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				}{Name: name, Description: description}
+			} else {
+				unitData = name
+			}
+			groups[state] = append(groups[state], unitData)
+		}
+
+		// Sort keys for consistent output
+		states := make([]string, 0, len(groups))
+		for s := range groups {
+			states = append(states, s)
+		}
+		slices.Sort(states)
+
+		for _, state := range states {
+			res := struct {
+				Host  string `json:"host"`
+				State string `json:"state"`
+				Units any    `json:"units"`
+			}{Host: effectiveHost(host), State: state, Units: groups[state]}
+			jsonByte, err := json.Marshal(res)
+			if err != nil {
+				return nil, nil, fmt.Errorf("could not unmarshall result: %w", err)
+			}
+			txtContentList = append(txtContentList, &mcp.TextContent{
+				Text: string(jsonByte),
+			})
+		}
+		if len(txtContentList) == 0 {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: hostOnly(host)}},
+			}, nil, nil
+		}
+
+		return &mcp.CallToolResult{
+			Content: txtContentList,
+		}, nil, nil
+	})
 }
 
 // helper function to get the valid states
@@ -375,7 +359,7 @@ func (conn *Connection) ListStatesHandler(ctx context.Context) (lst []string, er
 }
 
 type RestartReloadParams struct {
-	Host         string `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
+	Host         string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
 	Name         string `json:"name" jsonschema:"Exact name of unit to restart"`
 	TimeOut      uint   `json:"timeout,omitempty" jsonschema:"Time to wait for the restart or reload to finish. After the timeout the function will return and restart and reload will run in the background and the result can be retreived with a separate function."`
 	Mode         string `json:"mode,omitempty" jsonschema:"Mode used for the restart or reload. 'replace' should be used."`
@@ -409,6 +393,7 @@ type CheckReloadRestartParams struct {
 // check status of reload or restart
 func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *mcp.CallToolRequest, params *RestartReloadParams) (res *mcp.CallToolResult, _ any, err error) {
 	slog.Debug("CheckForRestartReloadRunning called", "params", params)
+	host := params.Host
 
 	allowed, err := conn.auth.IsWriteAuthorized(ctx)
 	if err != nil {
@@ -422,7 +407,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: hostMessage(result),
+					Text: hostMessage(host, result),
 				},
 			},
 		}, nil, nil
@@ -430,7 +415,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: hostMessage("Reload or restart still in progress."),
+					Text: hostMessage(host, "Reload or restart still in progress."),
 				},
 			},
 		}, nil, nil
@@ -438,7 +423,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: hostMessage("Finished"),
+					Text: hostMessage(host, "Finished"),
 				},
 			},
 		}, nil, nil
@@ -446,7 +431,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 }
 
 type ChangeUnitStateParams struct {
-	Host    string `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
+	Host    string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
 	Name    string `json:"name" jsonschema:"Exact name of unit to change state"`
 	Action  string `json:"action" jsonschema:"Action to perform."`
 	Mode    string `json:"mode,omitempty" jsonschema:"Mode when restarting a unit. Defaults to 'replace'."`
@@ -485,9 +470,8 @@ func CreateChangeInputSchema() *jsonschema.Schema {
 }
 
 func (conn *Connection) ChangeUnitState(ctx context.Context, req *mcp.CallToolRequest, params *ChangeUnitStateParams) (res *mcp.CallToolResult, _ any, err error) {
-	// 'localhost' is a synonym for the local machine, so resolve the effective host here
-	resolvedHost := util.HostName(params.Host)
-	slog.Debug("ChangeUnitState called", "params", params, "resolved_host", resolvedHost)
+	host := params.Host
+	slog.Debug("ChangeUnitState called", "params", params, "resolved_host", host)
 
 	var permission string
 	if params.Action == "enable" || params.Action == "enable_force" || params.Action == "disable" {
@@ -507,83 +491,112 @@ func (conn *Connection) ChangeUnitState(ctx context.Context, req *mcp.CallToolRe
 		return nil, nil, fmt.Errorf("not waiting longer than MaxTimeOut(%d), longer operation will run in the background and result can be gathered with separate function.", MaxTimeOut)
 	}
 
-	switch params.Action {
-	case "start":
-		if params.Mode == "" {
-			params.Mode = "replace"
+	if host == "" || host == LocalHost {
+		host = LocalHost
+	}
+
+	return conn.withConn(ctx, host, func(dc DbusConnection, ch chan string) (*mcp.CallToolResult, any, error) {
+		switch params.Action {
+		case "start":
+			if params.Mode == "" {
+				params.Mode = "replace"
+			}
+			if !slices.Contains(ValidRestartModes(), params.Mode) {
+				return nil, nil, fmt.Errorf("invalid mode for start: %s", params.Mode)
+			}
+			_, err = dc.StartUnitContext(ctx, params.Name, params.Mode, ch)
+		case "stop":
+			_, err = dc.StopUnitContext(ctx, params.Name, params.Mode, ch)
+		case "stop_kill":
+			dc.KillUnitContext(ctx, params.Name, int32(9))
+		case "restart_force":
+			_, err = dc.RestartUnitContext(ctx, params.Name, params.Mode, ch)
+		case "restart":
+			_, err = dc.ReloadOrRestartUnitContext(ctx, params.Name, params.Mode, ch)
+		case "reload":
+			_, err = dc.ReloadOrRestartUnitContext(ctx, params.Name, params.Mode, ch)
+		case "enable", "enable_force":
+			_, enabledRes, err := dc.EnableUnitFilesContext(ctx, []string{params.Name}, params.Runtime, strings.HasSuffix(params.Action, "_force"))
+			if err != nil {
+				slog.Error("error when enabling", "dbus.error", err)
+				return nil, nil, fmt.Errorf("error when enabling: %w", err)
+			}
+			if len(enabledRes) == 0 {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{
+						&mcp.TextContent{Text: hostMessage(host, fmt.Sprintf("nothing changed for %s", params.Name))},
+					},
+				}, nil, nil
+			}
+			txtContentList := []mcp.Content{}
+			for _, res := range enabledRes {
+				resJson := struct {
+					Host        string `json:"host"`
+					Type        string `json:"type"`
+					Filename    string `json:"filename"`
+					Destination string `json:"destination"`
+				}{Host: effectiveHost(host), Type: res.Type, Filename: res.Filename, Destination: res.Destination}
+				jsonByte, _ := json.Marshal(resJson)
+				txtContentList = append(txtContentList, &mcp.TextContent{Text: string(jsonByte)})
+			}
+			return &mcp.CallToolResult{Content: txtContentList}, nil, nil
+		case "disable":
+			disabledRes, err := dc.DisableUnitFilesContext(ctx, []string{params.Name}, params.Runtime)
+			if err != nil {
+				return nil, nil, fmt.Errorf("error when disabling: %w", err)
+			}
+			if len(disabledRes) == 0 {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{
+						&mcp.TextContent{Text: hostMessage(host, fmt.Sprintf("nothing changed for %s", params.Name))},
+					},
+				}, nil, nil
+			}
+			txtContentList := []mcp.Content{}
+			for _, res := range disabledRes {
+				resJson := struct {
+					Host        string `json:"host"`
+					Type        string `json:"type"`
+					Filename    string `json:"filename"`
+					Destination string `json:"destination"`
+				}{Host: effectiveHost(host), Type: res.Type, Filename: res.Filename, Destination: res.Destination}
+				jsonByte, _ := json.Marshal(resJson)
+				txtContentList = append(txtContentList, &mcp.TextContent{Text: string(jsonByte)})
+			}
+			return &mcp.CallToolResult{Content: txtContentList}, nil, nil
+		default:
+			return nil, nil, fmt.Errorf("invalid action: %s", params.Action)
 		}
-		if !slices.Contains(ValidRestartModes(), params.Mode) {
-			return nil, nil, fmt.Errorf("invalid mode for start: %s", params.Mode)
-		}
-		_, err = conn.dbus.StartUnitContext(ctx, params.Name, params.Mode, conn.rchannel)
-	case "stop":
-		_, err = conn.dbus.StopUnitContext(ctx, params.Name, params.Mode, conn.rchannel)
-	case "stop_kill":
-		conn.dbus.KillUnitContext(ctx, params.Name, int32(9))
-	case "restart_force":
-		_, err = conn.dbus.RestartUnitContext(ctx, params.Name, params.Mode, conn.rchannel)
-	case "restart":
-		_, err = conn.dbus.ReloadOrRestartUnitContext(ctx, params.Name, params.Mode, conn.rchannel)
-	case "reload":
-		_, err = conn.dbus.ReloadOrRestartUnitContext(ctx, params.Name, params.Mode, conn.rchannel)
-	case "enable", "enable_force":
-		_, enabledRes, err := conn.dbus.EnableUnitFilesContext(ctx, []string{params.Name}, params.Runtime, strings.HasSuffix(params.Action, "_force"))
+
 		if err != nil {
-			slog.Error("error when enabling", "dbus.error", err)
-			return nil, nil, fmt.Errorf("error when enabling: %w", err)
+			return nil, nil, err
 		}
-		if len(enabledRes) == 0 {
+
+		select {
+		case result := <-ch:
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: hostMessage(fmt.Sprintf("nothing changed for %s", params.Name))},
+					&mcp.TextContent{
+						Text: hostMessage(host, result),
+					},
+				},
+			}, nil, nil
+		case <-time.After(3 * time.Second):
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{
+						Text: hostMessage(host, "Reload or restart still in progress."),
+					},
+				},
+			}, nil, nil
+		default:
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{
+						Text: hostMessage(host, "Finished"),
+					},
 				},
 			}, nil, nil
 		}
-		txtContentList := []mcp.Content{}
-		for _, res := range enabledRes {
-			resJson := struct {
-				Host        string `json:"host"`
-				Type        string `json:"type"`
-				Filename    string `json:"filename"`
-				Destination string `json:"destination"`
-			}{Host: util.LocalHostName(), Type: res.Type, Filename: res.Filename, Destination: res.Destination}
-			jsonByte, _ := json.Marshal(resJson)
-			txtContentList = append(txtContentList, &mcp.TextContent{Text: string(jsonByte)})
-		}
-		return &mcp.CallToolResult{Content: txtContentList}, nil, nil
-	case "disable":
-		disabledRes, err := conn.dbus.DisableUnitFilesContext(ctx, []string{params.Name}, params.Runtime)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error when disabling: %w", err)
-		}
-		if len(disabledRes) == 0 {
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					&mcp.TextContent{Text: hostMessage(fmt.Sprintf("nothing changed for %s", params.Name))},
-				},
-			}, nil, nil
-		}
-		txtContentList := []mcp.Content{}
-		for _, res := range disabledRes {
-			resJson := struct {
-				Host        string `json:"host"`
-				Type        string `json:"type"`
-				Filename    string `json:"filename"`
-				Destination string `json:"destination"`
-			}{Host: util.LocalHostName(), Type: res.Type, Filename: res.Filename, Destination: res.Destination}
-			jsonByte, _ := json.Marshal(resJson)
-			txtContentList = append(txtContentList, &mcp.TextContent{Text: string(jsonByte)})
-		}
-		return &mcp.CallToolResult{Content: txtContentList}, nil, nil
-	default:
-		return nil, nil, fmt.Errorf("invalid action: %s", params.Action)
-	}
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return conn.CheckForRestartReloadRunning(ctx, req, &RestartReloadParams{
-		TimeOut: params.TimeOut,
 	})
 }

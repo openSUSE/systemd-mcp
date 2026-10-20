@@ -83,13 +83,12 @@ func NewRootCmd() *cobra.Command {
 			slog.Debug("Logger initialized", "level", logLevel)
 
 			if exe, err := os.Executable(); err == nil {
-				if cwd, err := os.Getwd(); err == nil {
-					slog.Info("starting systemd-mcp",
-						"version", strings.TrimSpace(version),
-						"args", os.Args,
-						"path", exe,
-						"cwd", cwd)
-				}
+				cwd, _ := os.Getwd()
+				slog.Info("starting systemd-mcp",
+					"version", strings.TrimSpace(version),
+					"args", os.Args,
+					"path", exe,
+					"cwd", cwd)
 			}
 
 			var authorization authkeeper.AuthKeeper
@@ -133,11 +132,23 @@ func NewRootCmd() *cobra.Command {
 						slog.Debug("Session started", "ID", req.Session.ID())
 					},
 				})
-			systemConn, err := systemd.NewSystem(context.Background(), authorization)
-			if err != nil {
-				slog.Warn("couldn't add systemd tools", slog.Any("error", err))
-			} else if systemConn != nil && useToon {
+			hostRegistry := systemd.NewRegistry()
+			if hosts := viper.GetStringSlice("remote-hosts"); len(hosts) > 0 {
+				if err := systemd.PreconfigureHosts(hostRegistry, hosts); err != nil {
+					return fmt.Errorf("couldn't preconfigure remote hosts: %w", err)
+				}
+			}
+
+			systemConn := systemd.NewSystem(authorization, hostRegistry)
+			if useToon {
 				systemConn.Encoder.UseToon()
+			}
+			defer systemConn.Close()
+
+			localBusOK := true
+			if err := systemConn.ConnectLocal(context.Background()); err != nil {
+				localBusOK = false
+				slog.Warn("local system bus unavailable; only remote hosts (via set_host) are operable", slog.Any("error", err))
 			}
 
 			tools := []struct {
@@ -145,8 +156,7 @@ func NewRootCmd() *cobra.Command {
 				Register func(server *mcp.Server, tool *mcp.Tool)
 			}{}
 
-			if systemConn != nil {
-				defer systemConn.Close()
+			if localBusOK {
 				tools = append(
 					tools,
 					struct {
@@ -207,6 +217,27 @@ func NewRootCmd() *cobra.Command {
 					},
 				)
 			}
+
+			// The host-management tool is always available, even when the local
+			// bus could not be opened, so hosts can still be registered and
+			// operated on.
+			tools = append(
+				tools,
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "Manage bus hosts",
+						Name:        "set_host",
+						Description: systemd.SetHostDescription(),
+						InputSchema: systemd.CreateSetHostSchema(),
+					},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.SetHost)
+					},
+				},
+			)
 			syslog := journal.HostLog{
 				Auth: authorization,
 			}
@@ -414,6 +445,8 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.Flags().Bool("list-tools", false, "List all available tools and exit")
 	rootCmd.Flags().StringSlice("enabled-tools", nil, "A list of tools to enable. Defaults to all tools.")
 	rootCmd.Flags().BoolVar(&useToon, "toon", false, "use token optimized object notation")
+	// remote hosts (optional; can also be added at runtime with the set_host tool)
+	rootCmd.Flags().StringArray("remote-hosts", nil, "Preconfigure a remote host as name:target[,user=U][,key_file=K][,known_hosts=F][,insecure][,remote_cmd=C]; repeatable")
 
 	rootCmd.MarkFlagsRequiredTogether("cert-file", "key-file")
 	rootCmd.MarkFlagsMutuallyExclusive("noauth", "controller")
