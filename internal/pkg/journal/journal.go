@@ -49,7 +49,7 @@ func (log *HostLog) Close() error {
 }
 
 type ListLogParams struct {
-	Host      string    `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
+	Host      string    `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
 	Count     int       `json:"count,omitempty" jsonschema:"Number of log lines to output"`
 	Offset    int       `json:"offset,omitempty" jsonschema:"Number of newest log entries to skip for pagination"`
 	From      time.Time `json:"from,omitempty" jsonschema:"Start time for filtering logs"`
@@ -434,8 +434,7 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 		}
 		if nrEntries == 0 {
 			// no entry in the range, the read head isn't on an entry so don't read one
-			host, _ := os.Hostname()
-			return logResult(ListLogResult{Host: host, Hint: sj.accessHint()})
+			return logResult(ListLogResult{Host: util.LocalHostName(), Hint: sj.accessHint()})
 		}
 	} else {
 		// Use original pagination logic when no time filters
@@ -445,8 +444,7 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 		}
 		if nrEntries == 0 {
 			// nothing matched, the read head isn't on an entry so don't read one
-			host, _ := os.Hostname()
-			return logResult(ListLogResult{Host: host, Hint: sj.accessHint()})
+			return logResult(ListLogResult{Host: util.LocalHostName(), Hint: sj.accessHint()})
 		}
 	}
 
@@ -456,7 +454,7 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 	uniqUnitName := make(map[string]bool)
 	uniqUnitNameStr := ""
 	uniqExeName := make(map[string]bool)
-	host, _ := os.Hostname()
+	host := util.LocalHostName()
 
 	var regexPattern *regexp.Regexp
 	if params.Pattern != "" {
@@ -523,9 +521,6 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 		}
 		if params.AllBoots {
 			structEntr.Boot = entry.Fields["_BOOT_ID"]
-		}
-		if host == entry.Fields["_HOSTNAME"] {
-			host = entry.Fields["_HOSTNAME"]
 		}
 		if structEntr.Identifier == "" {
 			structEntr.Identifier = fmt.Sprintf("%s:%s", entry.Fields["_SYSTEMD_UNIT"], entry.Fields["_SYSTEMD_USER_UNIT"])

@@ -63,7 +63,7 @@ type UnitProperties struct {
 }
 
 type ListLoadedUnitsParams struct {
-	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
+	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
 	State              string   `json:"state,omitempty" jsonschema:"List units in this active/load state (e.g. 'active', 'failed'). Defaults to 'active'. Use 'all' to list all states. Note: SubStates like 'running', 'dead', 'mounted', 'plugged' are not supported - use the corresponding parent ActiveState instead (e.g., 'active' for running units, 'inactive' for dead units)."`
 	Patterns           []string `json:"patterns,omitempty" jsonschema:"List units by their names or patterns (e.g. '*.service')."`
 	Properties         bool     `json:"properties,omitempty" jsonschema:"If true, return detailed properties for each unit."`
@@ -87,6 +87,29 @@ func CreateListLoadedUnitsSchema() *jsonschema.Schema {
 	}
 
 	return inputSchema
+}
+
+// hostMessage wraps a plain status message with the actual host, so even terse
+// results keep the host they were produced on.
+func hostMessage(message string) string {
+	b, err := json.Marshal(map[string]any{
+		"host":    util.LocalHostName(),
+		"message": message,
+	})
+	if err != nil {
+		return `{"host":"localhost","message":"` + message + `"}`
+	}
+	return string(b)
+}
+
+// hostOnly returns a payload with just the actual host, for calls that produce
+// no other data.
+func hostOnly() string {
+	b, err := json.Marshal(map[string]any{"host": util.LocalHostName()})
+	if err != nil {
+		return `{"host":"localhost"}`
+	}
+	return string(b)
 }
 
 func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRequest, params *ListLoadedUnitsParams) (*mcp.CallToolResult, any, error) {
@@ -127,7 +150,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 
 			var jsonByte []byte
 			if params.Verbose {
-				jsonByte, err = conn.Encoder.Encode(&props)
+				jsonByte, err = util.EncodeWithHost(conn.Encoder, &props)
 			} else {
 				prop := UnitProperties{}
 				tmp, _ := json.Marshal(props)
@@ -135,7 +158,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 					slog.Warn("failed to unmarshal properties", "unit", u.Name, "error", err)
 					continue
 				}
-				jsonByte, err = conn.Encoder.Encode(&prop)
+				jsonByte, err = util.EncodeWithHost(conn.Encoder, &prop)
 			}
 			if err != nil {
 				return nil, nil, err
@@ -146,7 +169,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 		}
 	} else if params.Verbose {
 		for _, u := range units {
-			jsonByte, err := conn.Encoder.Encode(&u)
+			jsonByte, err := util.EncodeWithHost(conn.Encoder, &u)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -178,9 +201,10 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 
 		for _, state := range states {
 			res := struct {
+				Host  string `json:"host"`
 				State string `json:"state"`
 				Units any    `json:"units"`
-			}{State: state, Units: groups[state]}
+			}{Host: util.LocalHostName(), State: state, Units: groups[state]}
 			jsonByte, err := conn.Encoder.Encode(res)
 			if err != nil {
 				return nil, nil, err
@@ -193,7 +217,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 
 	if len(txtContentList) == 0 {
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "[]"}},
+			Content: []mcp.Content{&mcp.TextContent{Text: hostOnly()}},
 		}, nil, nil
 	}
 
@@ -203,7 +227,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 }
 
 type ListUnitFilesParams struct {
-	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
+	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
 	State              string   `json:"state,omitempty" jsonschema:"List unit files in this enablement state (e.g. 'enabled', 'disabled'). Defaults to 'enabled'. Use 'all' to list all states."`
 	Patterns           []string `json:"patterns,omitempty" jsonschema:"List unit files by their names or patterns (e.g. '*.service'). If empty all unit file are listed."`
 	IncludeDescription bool     `json:"include_description,omitempty" jsonschema:"If true, include the description for each unit."`
@@ -303,9 +327,10 @@ func (conn *Connection) ListUnitFiles(ctx context.Context, req *mcp.CallToolRequ
 
 	for _, state := range states {
 		res := struct {
+			Host  string `json:"host"`
 			State string `json:"state"`
 			Units any    `json:"units"`
-		}{State: state, Units: groups[state]}
+		}{Host: util.LocalHostName(), State: state, Units: groups[state]}
 		jsonByte, err := json.Marshal(res)
 		if err != nil {
 			return nil, nil, fmt.Errorf("could not unmarshall result: %w", err)
@@ -316,7 +341,7 @@ func (conn *Connection) ListUnitFiles(ctx context.Context, req *mcp.CallToolRequ
 	}
 	if len(txtContentList) == 0 {
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "[]"}},
+			Content: []mcp.Content{&mcp.TextContent{Text: hostOnly()}},
 		}, nil, nil
 	}
 
@@ -350,7 +375,7 @@ func (conn *Connection) ListStatesHandler(ctx context.Context) (lst []string, er
 }
 
 type RestartReloadParams struct {
-	Host         string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
+	Host         string `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
 	Name         string `json:"name" jsonschema:"Exact name of unit to restart"`
 	TimeOut      uint   `json:"timeout,omitempty" jsonschema:"Time to wait for the restart or reload to finish. After the timeout the function will return and restart and reload will run in the background and the result can be retreived with a separate function."`
 	Mode         string `json:"mode,omitempty" jsonschema:"Mode used for the restart or reload. 'replace' should be used."`
@@ -397,7 +422,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: result,
+					Text: hostMessage(result),
 				},
 			},
 		}, nil, nil
@@ -405,7 +430,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: "Reload or restart still in progress.",
+					Text: hostMessage("Reload or restart still in progress."),
 				},
 			},
 		}, nil, nil
@@ -413,7 +438,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: "Finished",
+					Text: hostMessage("Finished"),
 				},
 			},
 		}, nil, nil
@@ -421,7 +446,7 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 }
 
 type ChangeUnitStateParams struct {
-	Host    string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
+	Host    string `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
 	Name    string `json:"name" jsonschema:"Exact name of unit to change state"`
 	Action  string `json:"action" jsonschema:"Action to perform."`
 	Mode    string `json:"mode,omitempty" jsonschema:"Mode when restarting a unit. Defaults to 'replace'."`
@@ -510,17 +535,18 @@ func (conn *Connection) ChangeUnitState(ctx context.Context, req *mcp.CallToolRe
 		if len(enabledRes) == 0 {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: fmt.Sprintf("nothing changed for %s", params.Name)},
+					&mcp.TextContent{Text: hostMessage(fmt.Sprintf("nothing changed for %s", params.Name))},
 				},
 			}, nil, nil
 		}
 		txtContentList := []mcp.Content{}
 		for _, res := range enabledRes {
 			resJson := struct {
+				Host        string `json:"host"`
 				Type        string `json:"type"`
 				Filename    string `json:"filename"`
 				Destination string `json:"destination"`
-			}{Type: res.Type, Filename: res.Filename, Destination: res.Destination}
+			}{Host: util.LocalHostName(), Type: res.Type, Filename: res.Filename, Destination: res.Destination}
 			jsonByte, _ := json.Marshal(resJson)
 			txtContentList = append(txtContentList, &mcp.TextContent{Text: string(jsonByte)})
 		}
@@ -533,17 +559,18 @@ func (conn *Connection) ChangeUnitState(ctx context.Context, req *mcp.CallToolRe
 		if len(disabledRes) == 0 {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: fmt.Sprintf("nothing changed for %s", params.Name)},
+					&mcp.TextContent{Text: hostMessage(fmt.Sprintf("nothing changed for %s", params.Name))},
 				},
 			}, nil, nil
 		}
 		txtContentList := []mcp.Content{}
 		for _, res := range disabledRes {
 			resJson := struct {
+				Host        string `json:"host"`
 				Type        string `json:"type"`
 				Filename    string `json:"filename"`
 				Destination string `json:"destination"`
-			}{Type: res.Type, Filename: res.Filename, Destination: res.Destination}
+			}{Host: util.LocalHostName(), Type: res.Type, Filename: res.Filename, Destination: res.Destination}
 			jsonByte, _ := json.Marshal(resJson)
 			txtContentList = append(txtContentList, &mcp.TextContent{Text: string(jsonByte)})
 		}

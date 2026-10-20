@@ -22,7 +22,7 @@ import (
 )
 
 type GetFileParams struct {
-	Host        string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
+	Host        string `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
 	Path        string `json:"path" jsonschema:"Absolute path to the file"`
 	ShowContent bool   `json:"show_content,omitempty" jsonschema:"Whether to show file content. Defaults to false."`
 	Offset      int    `json:"offset,omitempty" jsonschema:"Line offset for pagination. Defaults to 0."`
@@ -41,6 +41,7 @@ type FileMetadata struct {
 }
 
 type GetFileResult struct {
+	Host       string         `json:"host"`
 	Metadata   *FileMetadata  `json:"metadata"`
 	Entries    []FileMetadata `json:"entries,omitempty"`
 	Content    string         `json:"content,omitempty"`
@@ -115,6 +116,7 @@ func GetFile(ctx context.Context, req *mcp.CallToolRequest, params *GetFileParam
 	metadata := getFileMetadata(ctx, params.Path, info, true)
 
 	result := &GetFileResult{
+		Host:     util.LocalHostName(),
 		Metadata: metadata,
 	}
 

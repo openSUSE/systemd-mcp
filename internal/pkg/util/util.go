@@ -21,6 +21,32 @@ func HostName(host string) string {
 	return host
 }
 
+// LocalHostName returns the hostname of the local machine, falling back to
+// "localhost" if it cannot be determined.
+func LocalHostName() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "localhost"
+}
+
+// EncodeWithHost returns value encoded alongside a top-level "host" field that
+// carries the local machine's hostname. value is normalized to a JSON object
+// first (the same representation the toon encoder produces for structs), so
+// the output shape is identical for both json and toon encoders.
+func EncodeWithHost(enc OutputEncoding, value any) ([]byte, error) {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	m["host"] = LocalHostName()
+	return enc.Encode(m)
+}
+
 /*
 cleans a map from emty strng or string slices with length 0
 */

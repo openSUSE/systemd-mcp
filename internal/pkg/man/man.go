@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
 )
 
 type GetManPageParams struct {
-	Host     string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname())."`
 	Name     string   `json:"name" jsonschema:"Name of the man page"`
 	Section  string   `json:"section,omitempty" jsonschema:"Section of the man page (default 1, e.g., 1, 8, 8p, 3perl)"`
 	Offset   int      `json:"offset,omitempty" jsonschema:"Line offset for pagination"`
@@ -47,6 +47,7 @@ func SetExecutor(e Executor) {
 }
 
 type ManPageResult struct {
+	Host       string   `json:"host"`
 	Content    string   `json:"content"`
 	Chapters   []string `json:"chapters"`
 	TotalLines int      `json:"total_lines"`
@@ -54,7 +55,6 @@ type ManPageResult struct {
 
 func CreateManPageSchema() *jsonschema.Schema {
 	inputSchema, _ := jsonschema.For[GetManPageParams](nil)
-	inputSchema.Properties["host"].Default = json.RawMessage("\"localhost\"")
 	inputSchema.Properties["limit"].Default = json.RawMessage(`2000`)
 	inputSchema.Properties["section"].Default = json.RawMessage(`"1"`)
 	return inputSchema
@@ -223,6 +223,7 @@ func GetManPage(ctx context.Context, req *mcp.CallToolRequest, params *GetManPag
 	cleanOutput := stripOverstrike(rawOutput)
 
 	res := parseAndFilterManPage(cleanOutput, params)
+	res.Host = util.LocalHostName()
 
 	jsonBytes, err := json.Marshal(res)
 	if err != nil {

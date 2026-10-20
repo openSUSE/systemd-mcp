@@ -9,6 +9,7 @@ import (
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	auth_pkg "github.com/openSUSE/systemd-mcp/authkeeper"
+	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -123,7 +124,7 @@ func TestListLoadedUnits(t *testing.T) {
 			},
 			want: []mcp.Content{
 				&mcp.TextContent{
-					Text: `{"Id":"test.service","Description":"","LoadState":"","FragmentPath":"","UnitFileState":"","UnitFilePreset":"","ActiveState":"","SubState":"","ActiveEnterTimestamp":0,"InvocationID":"","MainPID":0,"ExecMainPID":0,"ExecMainStatus":0,"TasksCurrent":0,"TasksMax":0,"CPUUsageNSec":0,"ControlGroup":"","ExecStartPre":null,"ExecStart":null,"Restart":"","MemoryCurrent":0}`,
+					Text: fmt.Sprintf(`{"host":%q,"Id":"test.service","Description":"","LoadState":"","FragmentPath":"","UnitFileState":"","UnitFilePreset":"","ActiveState":"","SubState":"","ActiveEnterTimestamp":0,"InvocationID":"","MainPID":0,"ExecMainPID":0,"ExecMainStatus":0,"TasksCurrent":0,"TasksMax":0,"CPUUsageNSec":0,"ControlGroup":"","ExecStartPre":null,"ExecStart":null,"Restart":"","MemoryCurrent":0}`, util.LocalHostName()),
 				},
 			},
 			wantErr: false,
@@ -138,7 +139,7 @@ func TestListLoadedUnits(t *testing.T) {
 			},
 			want: []mcp.Content{
 				&mcp.TextContent{
-					Text: `{"state":"running","units":["test.service"]}`,
+					Text: fmt.Sprintf(`{"host":%q,"state":"running","units":["test.service"]}`, util.LocalHostName()),
 				},
 			},
 			wantErr: false,
@@ -154,7 +155,7 @@ func TestListLoadedUnits(t *testing.T) {
 			},
 			want: []mcp.Content{
 				&mcp.TextContent{
-					Text: `{"state":"running","units":[{"name":"test.service","description":"Test Service"}]}`,
+					Text: fmt.Sprintf(`{"host":%q,"state":"running","units":[{"name":"test.service","description":"Test Service"}]}`, util.LocalHostName()),
 				},
 			},
 			wantErr: false,
@@ -168,7 +169,7 @@ func TestListLoadedUnits(t *testing.T) {
 				return []dbus.UnitStatus{}, nil
 			},
 			want: []mcp.Content{
-				&mcp.TextContent{Text: "[]"},
+				&mcp.TextContent{Text: fmt.Sprintf(`{"host":%q}`, util.LocalHostName())},
 			},
 			wantErr: false,
 		},
@@ -194,11 +195,12 @@ func TestListLoadedUnits(t *testing.T) {
 			want: []mcp.Content{
 				&mcp.TextContent{
 					Text: func() string {
-						res := struct {
-							State string   `json:"state"`
-							Units []string `json:"units"`
-						}{State: "running", Units: []string{"test.service"}}
-						out, _ := gotoon.Encode(res)
+						res := map[string]any{
+							"host":  util.LocalHostName(),
+							"state": "running",
+							"units": []any{"test.service"},
+						}
+						out, _ := gotoon.Encode(&res)
 						return out
 					}(),
 				},
@@ -222,7 +224,7 @@ func TestListLoadedUnits(t *testing.T) {
 			want: []mcp.Content{
 				&mcp.TextContent{
 					Text: func() string {
-						props := map[string]interface{}{"Id": "test.service"}
+						props := map[string]interface{}{"Id": "test.service", "host": util.LocalHostName()}
 						out, _ := gotoon.Encode(&props)
 						return out
 					}(),
@@ -288,7 +290,7 @@ func TestListUnitFiles(t *testing.T) {
 			},
 			want: []mcp.Content{
 				&mcp.TextContent{
-					Text: `{"state":"enabled","units":["test.service"]}`,
+					Text: fmt.Sprintf(`{"host":%q,"state":"enabled","units":["test.service"]}`, util.LocalHostName()),
 				},
 			},
 			wantErr: false,
@@ -306,7 +308,7 @@ func TestListUnitFiles(t *testing.T) {
 			},
 			want: []mcp.Content{
 				&mcp.TextContent{
-					Text: `{"state":"enabled","units":["test.service"]}`,
+					Text: fmt.Sprintf(`{"host":%q,"state":"enabled","units":["test.service"]}`, util.LocalHostName()),
 				},
 			},
 			wantErr: false,
@@ -324,7 +326,7 @@ func TestListUnitFiles(t *testing.T) {
 			},
 			want: []mcp.Content{
 				&mcp.TextContent{
-					Text: `{"state":"enabled","units":[{"name":"test.service","description":"Test Service"}]}`,
+					Text: fmt.Sprintf(`{"host":%q,"state":"enabled","units":[{"name":"test.service","description":"Test Service"}]}`, util.LocalHostName()),
 				},
 			},
 			wantErr: false,
