@@ -63,12 +63,12 @@ type UnitProperties struct {
 }
 
 type ListLoadedUnitsParams struct {
-	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
-	State              string   `json:"state,omitempty" jsonschema:"List units in this active/load state (e.g. 'active', 'failed'). Defaults to 'active'. Use 'all' to list all states. Note: SubStates like 'running', 'dead', 'mounted', 'plugged' are not supported - use the corresponding parent ActiveState instead (e.g., 'active' for running units, 'inactive' for dead units)."`
-	Patterns           []string `json:"patterns,omitempty" jsonschema:"List units by their names or patterns (e.g. '*.service')."`
-	Properties         bool     `json:"properties,omitempty" jsonschema:"If true, return detailed properties for each unit."`
-	IncludeDescription bool     `json:"include_description,omitempty" jsonschema:"If true, include the description for each unit."`
-	Verbose            bool     `json:"verbose,omitempty" jsonschema:"Return more details in the response."`
+	Host               string   `json:"host,omitempty" jsonschema:"Optional; defaults to 'localhost' and requires no registration. 'localhost' (and the empty value) is a synonym for the local machine (os.Hostname()). Any other value must be a host name that was registered with the set_host tool first."`
+	State              string   `json:"state,omitempty" jsonschema:"Optional; defaults to 'active'. List units in this active/load state. Use 'all' to list every state. Note: SubStates like 'running', 'dead', 'mounted', 'plugged' are not supported - use the corresponding parent ActiveState instead (e.g. 'active' for running units, 'inactive' for dead units)."`
+	Patterns           []string `json:"patterns,omitempty" jsonschema:"Optional; defaults to empty (all units). List units by their names or patterns (e.g. '*.service')."`
+	Properties         bool     `json:"properties,omitempty" jsonschema:"Optional; defaults to false. If true, return detailed properties for each unit."`
+	IncludeDescription bool     `json:"include_description,omitempty" jsonschema:"Optional; defaults to false. If true, include the description for each unit."`
+	Verbose            bool     `json:"verbose,omitempty" jsonschema:"Optional; defaults to false. Return more details in the response."`
 }
 
 func CreateListLoadedUnitsSchema() *jsonschema.Schema {
@@ -110,7 +110,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 		reqStates = []string{"active"}
 	}
 
-	return conn.withConn(ctx, host, func(dc DbusConnection, _ chan string) (*mcp.CallToolResult, any, error) {
+	return conn.withConn(ctx, host, req, func(dc DbusConnection, _ chan string) (*mcp.CallToolResult, any, error) {
 		units, err := dc.ListUnitsByPatternsContext(ctx, reqStates, params.Patterns)
 		if err != nil {
 			return nil, nil, err
@@ -207,7 +207,7 @@ func (conn *Connection) ListLoadedUnits(ctx context.Context, req *mcp.CallToolRe
 }
 
 type ListUnitFilesParams struct {
-	Host               string   `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
+	Host               string   `json:"host,omitempty" jsonschema:"Optional; defaults to 'localhost' and requires no registration. 'localhost' (and the empty value) is a synonym for the local machine (os.Hostname()). Any other value must be a host name that was registered with the set_host tool first."`
 	State              string   `json:"state,omitempty" jsonschema:"List unit files in this enablement state (e.g. 'enabled', 'disabled'). Defaults to 'enabled'. Use 'all' to list all states."`
 	Patterns           []string `json:"patterns,omitempty" jsonschema:"List unit files by their names or patterns (e.g. '*.service'). If empty all unit file are listed."`
 	IncludeDescription bool     `json:"include_description,omitempty" jsonschema:"If true, include the description for each unit."`
@@ -240,7 +240,7 @@ func (conn *Connection) ListUnitFiles(ctx context.Context, req *mcp.CallToolRequ
 	}
 	host := params.Host
 
-	return conn.withConn(ctx, host, func(dc DbusConnection, _ chan string) (*mcp.CallToolResult, any, error) {
+	return conn.withConn(ctx, host, req, func(dc DbusConnection, _ chan string) (*mcp.CallToolResult, any, error) {
 		unitList, err := dc.ListUnitFilesContext(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -359,11 +359,11 @@ func (conn *Connection) ListStatesHandler(ctx context.Context) (lst []string, er
 }
 
 type RestartReloadParams struct {
-	Host         string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
-	Name         string `json:"name" jsonschema:"Exact name of unit to restart"`
-	TimeOut      uint   `json:"timeout,omitempty" jsonschema:"Time to wait for the restart or reload to finish. After the timeout the function will return and restart and reload will run in the background and the result can be retreived with a separate function."`
-	Mode         string `json:"mode,omitempty" jsonschema:"Mode used for the restart or reload. 'replace' should be used."`
-	Forcerestart bool   `json:"forcerestart,omitempty" jsonschema:"mode of the operation. 'replace' should be used per default and replace allready queued jobs. With 'fail' the operation will fail if other operations are in progress."`
+	Host         string `json:"host,omitempty" jsonschema:"Optional; defaults to 'localhost' and requires no registration. 'localhost' (and the empty value) is a synonym for the local machine (os.Hostname()). Any other value must be a host name that was registered with the set_host tool first."`
+	Name         string `json:"name" jsonschema:"Required. Exact name of the unit to restart (e.g. 'systemd-journald.service')."`
+	TimeOut      uint   `json:"timeout,omitempty" jsonschema:"Optional; defaults to 60. Time (seconds) to wait for the restart or reload to finish; after the timeout the function returns and the restart/reload continues in the background, with the result retrievable via the check_restart_reload tool. Max 60."`
+	Mode         string `json:"mode,omitempty" jsonschema:"Optional; defaults to 'replace'. Mode used for the restart or reload. 'replace' should be used per default and replaces already-queued jobs; 'fail' the operation will fail if other operations are in progress."`
+	Forcerestart bool   `json:"forcerestart,omitempty" jsonschema:"Optional; defaults to false. Force the restart even if other operations are in progress (overrides mode 'fail')." `
 }
 
 // return which are define in the upstream documentation as:
@@ -431,12 +431,12 @@ func (conn *Connection) CheckForRestartReloadRunning(ctx context.Context, req *m
 }
 
 type ChangeUnitStateParams struct {
-	Host    string `json:"host,omitempty" jsonschema:"Host on which to run this command. 'localhost' (the default) is a synonym for the local machine (os.Hostname()); any other value must be a host registered via the set_host tool."`
-	Name    string `json:"name" jsonschema:"Exact name of unit to change state"`
-	Action  string `json:"action" jsonschema:"Action to perform."`
-	Mode    string `json:"mode,omitempty" jsonschema:"Mode when restarting a unit. Defaults to 'replace'."`
-	TimeOut uint   `json:"timeout,omitempty" jsonschema:"Time to wait for the operation to finish. Max 60s."`
-	Runtime bool   `json:"runtime,omitempty" jsonschema:"Enable/Disable only temporarily (runtime)."`
+	Host    string `json:"host,omitempty" jsonschema:"Optional; defaults to 'localhost' and requires no registration. 'localhost' (and the empty value) is a synonym for the local machine (os.Hostname()). Any other value must be a host name that was registered with the set_host tool first."`
+	Name    string `json:"name" jsonschema:"Required. Exact name of the unit to change state (e.g. 'systemd-journald.service')."`
+	Action  string `json:"action" jsonschema:"Optional; defaults to 'enable'. Action to perform: one of restart, restart_force, start, stop, stop_kill, reload, enable, enable_force, disable."`
+	Mode    string `json:"mode,omitempty" jsonschema:"Optional; defaults to 'replace'. Mode when starting/stopping/restarting a unit: one of replace, fail, isolate, ignore-dependencies, ignore-requirements."`
+	TimeOut uint   `json:"timeout,omitempty" jsonschema:"Optional; defaults to 30. Time (seconds) to wait for the operation to finish. Max 60; longer operations run in the background and the result can be gathered with a separate function."`
+	Runtime bool   `json:"runtime,omitempty" jsonschema:"Optional; defaults to false. Enable/Disable only temporarily at runtime (does not edit unit files)." `
 }
 
 func ValidChanges() []string {
@@ -495,7 +495,7 @@ func (conn *Connection) ChangeUnitState(ctx context.Context, req *mcp.CallToolRe
 		host = LocalHost
 	}
 
-	return conn.withConn(ctx, host, func(dc DbusConnection, ch chan string) (*mcp.CallToolResult, any, error) {
+	return conn.withConn(ctx, host, req, func(dc DbusConnection, ch chan string) (*mcp.CallToolResult, any, error) {
 		switch params.Action {
 		case "start":
 			if params.Mode == "" {

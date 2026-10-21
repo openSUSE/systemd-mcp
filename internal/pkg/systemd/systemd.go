@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	auth "github.com/openSUSE/systemd-mcp/authkeeper"
 	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
+	"golang.org/x/crypto/ssh"
 )
 
 // DbusConnection is the subset of a systemd D-Bus connection the tools use.
@@ -72,14 +73,16 @@ func (conn *Connection) ConnectLocal(ctx context.Context) error {
 // channel the endpoint uses to report async job results, and whether the caller
 // owns the connection (i.e. must Close it when done — true only for the
 // per-call remote connections).
-func (conn *Connection) connectionFor(ctx context.Context, hostName string) (DbusConnection, chan string, bool, error) {
+func (conn *Connection) connectionFor(ctx context.Context, hostName string, session *mcp.ServerSession) (DbusConnection, chan string, bool, error) {
 	if conn.reg != nil {
 		info, err := conn.reg.Get(hostName)
 		if err != nil {
 			return nil, nil, false, err
 		}
 		if !info.IsLocal() {
-			remote, err := dialRemote(ctx, info)
+			remote, err := dialRemote(ctx, info,
+				func(key ssh.PublicKey) bool { return conn.reg.IsTrusted(info.Name, key) },
+				func(key ssh.PublicKey) bool { return conn.acceptHostKey(ctx, session, info, key) })
 			if err != nil {
 				return nil, nil, false, err
 			}
@@ -97,8 +100,15 @@ func (conn *Connection) connectionFor(ctx context.Context, hostName string) (Dbu
 // if remote, and closes it again when fn returns — so each call opens and tears
 // down exactly one remote bus connection. fn receives the ready DbusConnection
 // and a channel that carries the async job result for that call.
-func (conn *Connection) withConn(ctx context.Context, hostName string, fn func(dc DbusConnection, ch chan string) (*mcp.CallToolResult, any, error)) (*mcp.CallToolResult, any, error) {
-	dc, ch, owned, err := conn.connectionFor(ctx, hostName)
+//
+// The MCP request (req) is passed in so an unknown SSH host key can be
+// elicited from the current client (req may be nil in tests or headless use).
+func (conn *Connection) withConn(ctx context.Context, hostName string, req *mcp.CallToolRequest, fn func(dc DbusConnection, ch chan string) (*mcp.CallToolResult, any, error)) (*mcp.CallToolResult, any, error) {
+	var session *mcp.ServerSession
+	if req != nil {
+		session = req.Session
+	}
+	dc, ch, owned, err := conn.connectionFor(ctx, hostName, session)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -25,13 +25,13 @@ type HostInfo struct {
 	// Name is the identifier clients pass as the "host" argument.
 	Name string `json:"name" jsonschema:"Identifier of the host; use 'localhost' for the local bus."`
 
-	Target     string `json:"target,omitempty" jsonschema:"SSH target host[:port] (default port 22). Required for remote hosts."`
-	User       string `json:"user,omitempty" jsonschema:"SSH user (defaults to the $USER environment variable)." `
-	KeyFile    string `json:"key_file,omitempty" jsonschema:"Path to an SSH private key file (the local ssh-agent is also consulted)." `
+	Target     string `json:"target,omitempty" jsonschema:"SSH target host[:port] (default port 22)."`
+	User       string `json:"user,omitempty" jsonschema:"SSH user (defaults to the $USER environment variable)."`
+	KeyFile    string `json:"key_file,omitempty" jsonschema:"Path to an SSH private key file (the local ssh-agent is also consulted)."`
 	Password   string `json:"-" jsonschema:"SSH password (used when no key/agent auth is available). Intentionally omitted from list output."`
 	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to a known_hosts file (or ~/.ssh/known_hosts) for host-key verification."`
-	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Accept any SSH host key (testing only)."`
-	RemoteCmd  string `json:"remote_cmd,omitempty" jsonschema:"Command to run on the remote host (default 'systemd-stdio-bridge')." `
+	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Whether the host accepts any SSH host key without verification (testing only)."`
+	RemoteCmd  string `json:"remote_cmd,omitempty" jsonschema:"Command run on the remote host (defaults to 'systemd-stdio-bridge')."`
 }
 
 // IsLocal reports whether h addresses this machine's own bus.
@@ -43,17 +43,17 @@ func (h HostInfo) IsLocal() bool {
 // "register" adds a host (using the SSH fields), "unregister" removes a
 // remote host, and "list" reports the known hosts.
 type SetHostParams struct {
-	Action string `json:"action" jsonschema:"One of 'register', 'unregister', 'list'."`
-	Host   string `json:"host,omitempty" jsonschema:"Host name to act on (the host argument the other tools use; 'localhost' is the local bus)." `
+	Action string `json:"action" jsonschema:"Required. Operation to perform. 'register' adds a remote host (needs host, target and SSH auth); 'unregister' removes one (needs host); 'list' reports the known hosts (needs nothing). Defaults to 'list'."`
+	Host   string `json:"host,omitempty" jsonschema:"Host name to act on (the identifier the other tools use for this bus). Required for 'register' (it must not be 'localhost') and for 'unregister'; ignored for 'list'."`
 
 	// SSH details, used when Action is "register".
-	Target     string `json:"target,omitempty" jsonschema:"SSH target host[:port] (default port 22); required for remote registration."`
-	User       string `json:"user,omitempty" jsonschema:"SSH user (defaults to $USER)."`
-	KeyFile    string `json:"key_file,omitempty" jsonschema:"Path to an SSH private key file (ssh-agent is also consulted)."`
-	Password   string `json:"password,omitempty" jsonschema:"SSH password (optional; an alternative to key/agent auth)." `
-	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to a known_hosts file for host-key verification."`
-	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Accept any SSH host key (testing only)."`
-	RemoteCmd  string `json:"remote_cmd,omitempty" jsonschema:"Command to run on the remote host (default 'systemd-stdio-bridge')."`
+	Target     string `json:"target,omitempty" jsonschema:"SSH target host[:port] (default port 22). Required for 'register'; ignored by 'unregister' and 'list'."`
+	User       string `json:"user,omitempty" jsonschema:"SSH user. Optional; defaults to $USER."`
+	KeyFile    string `json:"key_file,omitempty" jsonschema:"Path to an SSH private key file. Optional; the local ssh-agent is also consulted, together with common default key files (~/.ssh/id_ed25519, ~/.ssh/id_rsa)." `
+	Password   string `json:"password,omitempty" jsonschema:"SSH password. Optional; an alternative to key/agent auth." `
+	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to a known_hosts file for host-key verification. Optional; defaults to ~/.ssh/known_hosts when it exists. A key that is neither trusted nor in known_hosts is shown to the user, who may then choose to accept (trust it for this host) or ignore (refuse the connection) it."`
+	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Accept any SSH host key without verification. Optional (testing only); defaults to false."`
+	RemoteCmd  string `json:"remote_cmd,omitempty" jsonschema:"Command to run on the remote host. Optional; defaults to 'systemd-stdio-bridge'."`
 }
 
 // effectiveHost maps a requested host argument to the name its endpoint is

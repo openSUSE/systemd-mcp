@@ -15,11 +15,11 @@ import (
 )
 
 type GetManPageParams struct {
-	Name     string   `json:"name" jsonschema:"Name of the man page"`
-	Section  string   `json:"section,omitempty" jsonschema:"Section of the man page (default 1, e.g., 1, 8, 8p, 3perl)"`
-	Offset   int      `json:"offset,omitempty" jsonschema:"Line offset for pagination"`
-	Limit    int      `json:"limit,omitempty" jsonschema:"Maximum number of lines to return (default 500)"`
-	Chapters []string `json:"chapters,omitempty" jsonschema:"List of chapters to retrieve (e.g. ['NAME', 'SYNOPSIS'])"`
+	Name     string   `json:"name" jsonschema:"Required. Name of the man page (e.g. 'ls', 'systemd'). Only a-z, A-Z, 0-9 and '-' are allowed."`
+	Section  string   `json:"section,omitempty" jsonschema:"Optional; defaults to '1'. Section of the man page (e.g. 1, 8, 8p, 3perl); only a-z, A-Z, 0-9."`
+	Offset   int      `json:"offset,omitempty" jsonschema:"Optional; defaults to 0. Line offset for pagination (zero-based)."`
+	Limit    int      `json:"limit,omitempty" jsonschema:"Optional; defaults to 2000. Maximum number of lines to return in one call."`
+	Chapters []string `json:"chapters,omitempty" jsonschema:"Optional; defaults to empty (all chapters). List of chapters to retrieve (e.g. ['NAME', 'SYNOPSIS']), matched case-insensitively."`
 }
 
 // Executor interface for running external commands.

@@ -49,15 +49,15 @@ func (log *HostLog) Close() error {
 }
 
 type ListLogParams struct {
-	Host      string    `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
-	Count     int       `json:"count,omitempty" jsonschema:"Number of log lines to output"`
-	Offset    int       `json:"offset,omitempty" jsonschema:"Number of newest log entries to skip for pagination"`
-	From      time.Time `json:"from,omitempty" jsonschema:"Start time for filtering logs"`
-	To        time.Time `json:"to,omitempty" jsonschema:"End time for filtering logs "`
-	Pattern   string    `json:"pattern,omitempty" jsonschema:"Regular expression pattern to filter log messages or units."`
-	Unit      []string  `json:"unit,omitempty" jsonschema:"Names of the service/unit from which to get the logs. Without an unit name the entries of all units are returned. The first field treated a regular expression if not set otherwise"`
-	ExactUnit bool      `json:"exact_unit,omitempty" jsonschema:"Treat the first name unit as exact idendtifier and not as regular expression"`
-	AllBoots  bool      `json:"allboots,omitempty" jsonschema:"Get the log entries from all boots, not just the active one"`
+	Host      string    `json:"host,omitempty" jsonschema:"Optional; defaults to the local machine (os.Hostname()). Note: this tool always reads from the local journal, regardless of the value."`
+	Count     int       `json:"count,omitempty" jsonschema:"Optional; defaults to 100. Number of log lines to output."`
+	Offset    int       `json:"offset,omitempty" jsonschema:"Optional; defaults to 0. Number of newest log entries to skip (for pagination)."`
+	From      time.Time `json:"from,omitempty" jsonschema:"Optional. Start time for filtering logs (RFC3339); omit to include older entries up to 'count'."`
+	To        time.Time `json:"to,omitempty" jsonschema:"Optional. End time for filtering logs (RFC3339); omit to include the most recent entries."`
+	Pattern   string    `json:"pattern,omitempty" jsonschema:"Optional; defaults to empty (no filter). Regular expression pattern to filter log messages or units."`
+	Unit      []string  `json:"unit,omitempty" jsonschema:"Optional; defaults to empty (all units). Names of the service/unit from which to get the logs. The first element is treated as a regular expression unless exact_unit is true."`
+	ExactUnit bool      `json:"exact_unit,omitempty" jsonschema:"Optional; defaults to false. Treat the first unit string as an exact identifier rather than a regular expression."`
+	AllBoots  bool      `json:"allboots,omitempty" jsonschema:"Optional; defaults to false. When true, get log entries from all boots, not just the active one."`
 }
 
 type LogOutput struct {

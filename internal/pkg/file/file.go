@@ -22,11 +22,11 @@ import (
 )
 
 type GetFileParams struct {
-	Host        string `json:"host,omitempty" jsonschema:"Host on which to run this command. This always runs on the local machine (os.Hostname())."`
-	Path        string `json:"path" jsonschema:"Absolute path to the file"`
-	ShowContent bool   `json:"show_content,omitempty" jsonschema:"Whether to show file content. Defaults to false."`
-	Offset      int    `json:"offset,omitempty" jsonschema:"Line offset for pagination. Defaults to 0."`
-	Limit       int    `json:"limit,omitempty" jsonschema:"Line limit for pagination. Defaults to 1000."`
+	Host        string `json:"host,omitempty" jsonschema:"Optional; defaults to the local machine (os.Hostname()). Note: this tool always reads from the local filesystem, regardless of the value."`
+	Path        string `json:"path" jsonschema:"Required. Absolute path to the file or directory to read (e.g. '/etc/systemd/system/ssh.service')."`
+	ShowContent bool   `json:"show_content,omitempty" jsonschema:"Optional; defaults to false. When true, include the file's text content in the result (subject to offset/limit pagination). When reading a directory this field is ignored and only entries are returned."`
+	Offset      int    `json:"offset,omitempty" jsonschema:"Optional; defaults to 0. Line offset for pagination (zero-based)."`
+	Limit       int    `json:"limit,omitempty" jsonschema:"Optional; defaults to 1000. Maximum number of lines to return in one call."`
 }
 
 type FileMetadata struct {

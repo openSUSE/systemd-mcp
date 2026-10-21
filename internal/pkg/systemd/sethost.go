@@ -11,9 +11,12 @@ import (
 )
 
 const setHostDescription = `Manage the bus hosts the other tools can operate on.
-Actions: 'register' adds a remote host, 'unregister' removes a remote host, and 'list' reports the known hosts.
-'register' is equivalent to establishing an SSH connection to that host: you supply the SSH target (host[:port]) and authentication (user, key_file or password), and the tools reach its D-Bus system bus over SSH from then on (think 'ssh user@host').
-The local host is always available as 'localhost' and needs no registration.`
+Actions (the 'action' parameter, required, defaults to 'list'):
+  - 'register'   adds a remote host. Required: 'host' (a name that is NOT 'localhost') and 'target' (the SSH host[:port]); at least one form of SSH authentication must already be available (ssh-agent, key_file, or password). Optional: user, key_file, password, known_hosts, insecure, remote_cmd.
+  - 'unregister' removes a remote host. Required: 'host'. Any other parameter is ignored and any previously accepted host key for this host is cleared.
+  - 'list'       reports the known hosts. Nothing else is required.
+'register' is equivalent to establishing an SSH connection to that host: the tools reach its D-Bus system bus over SSH from then on (think 'ssh user@host'). The local host is always available as 'localhost' and needs no registration.
+Host-key handling: on the first connection to a remote host, if its SSH host key is neither in known_hosts nor already trusted, it is shown to the user, who may accept it (trusted for this server run) or ignore it (the connection is refused).`
 
 // SetHostDescription is the human/tool description for the set_host tool.
 func SetHostDescription() string {
