@@ -37,7 +37,7 @@ func TestGetFile_Unit(t *testing.T) {
 			Path:        testFilePath,
 			ShowContent: true,
 		}
-		res, _, err := GetFile(context.Background(), nil, params, testAuth)
+		res, _, err := GetFile(context.Background(), nil, params, testAuth, nil)
 		assert.NoError(t, err)
 		assert.NotNil(t, res)
 
@@ -46,8 +46,8 @@ func TestGetFile_Unit(t *testing.T) {
 		err = json.Unmarshal([]byte(tc.Text), &result)
 		assert.NoError(t, err)
 		assert.Equal(t, "test.txt", result.Metadata.Name)
-		// bufio.Scanner strips newlines and we join with \n, 
-		// so the trailing newline of the last line is missing if it was empty.
+		// bufio.Scanner strips newlines and we join with \n, so the trailing
+		// newline of the last line is missing if it was empty.
 		assert.Equal(t, strings.TrimSuffix(content, "\n"), result.Content)
 		assert.Equal(t, 3, result.TotalLines)
 	})
@@ -56,14 +56,14 @@ func TestGetFile_Unit(t *testing.T) {
 		params := &GetFileParams{
 			Path: tmpDir,
 		}
-		res, _, err := GetFile(context.Background(), nil, params, testAuth)
+		res, _, err := GetFile(context.Background(), nil, params, testAuth, nil)
 		assert.NoError(t, err)
 
 		var result GetFileResult
 		tc := res.Content[0].(*mcp.TextContent)
 		err = json.Unmarshal([]byte(tc.Text), &result)
 		assert.NoError(t, err)
-		assert.True(t, result.Metadata.IsDir)
+		assert.Truef(t, result.Metadata.IsDir, "expected a directory entry")
 		assert.GreaterOrEqual(t, len(result.Entries), 2) // test.txt and subdir
 	})
 
@@ -71,7 +71,7 @@ func TestGetFile_Unit(t *testing.T) {
 		params := &GetFileParams{
 			Path: filepath.Join(tmpDir, "nonexistent"),
 		}
-		_, _, err := GetFile(context.Background(), nil, params, testAuth)
+		_, _, err := GetFile(context.Background(), nil, params, testAuth, nil)
 		assert.Error(t, err)
 	})
 }

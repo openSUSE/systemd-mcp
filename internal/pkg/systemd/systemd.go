@@ -3,10 +3,12 @@ package systemd
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	auth "github.com/openSUSE/systemd-mcp/authkeeper"
+	"github.com/openSUSE/systemd-mcp/internal/pkg/extdbus"
 	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
 	"golang.org/x/crypto/ssh"
 )
@@ -116,6 +118,42 @@ func (conn *Connection) withConn(ctx context.Context, hostName string, req *mcp.
 		defer dc.Close()
 	}
 	return fn(dc, ch)
+}
+
+// RunRemote executes command on a remote host over SSH, returning stdout,
+// stderr and the process exit status. It reuses the exact same host registry
+// and sshClientConfig as the D-Bus tools, so the registered host's user,
+// key_file/password, known_hosts, insecure flag and the user's process-scoped
+// accepted-host-keys store all apply — and an unknown host key is elicited
+// from the current client the same way a first D-Bus connection is. It is only
+// usable for registered remote hosts; for the local host (LocalHost / "") it
+// returns ErrNoLocalBus so the caller can fall back to a local implementation.
+func (conn *Connection) RunRemote(ctx context.Context, req *mcp.CallToolRequest, hostName, command string) (string, string, int, error) {
+	info, err := conn.reg.Get(hostName)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if info.IsLocal() {
+		return "", "", 0, ErrNoLocalBus
+	}
+
+	var session *mcp.ServerSession
+	if req != nil {
+		session = req.Session
+	}
+	remote, err := dialRemote(ctx, info,
+		func(key ssh.PublicKey) bool { return conn.reg.IsTrusted(info.Name, key) },
+		func(key ssh.PublicKey) bool { return conn.acceptHostKey(ctx, session, info, key) })
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer remote.Close()
+
+	c, ok := remote.(*extdbus.Conn)
+	if !ok {
+		return "", "", 0, fmt.Errorf("remote connection is not an SSH channel and cannot run %q", command)
+	}
+	return c.Run(ctx, command)
 }
 
 // Close closes the local bus connection and the shared job channel. Remote

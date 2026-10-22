@@ -12,6 +12,7 @@
 package extdbus
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -126,4 +127,77 @@ func (c *Conn) Close() {
 		sc.Close()
 	}
 	_ = c.client.Close()
+}
+
+// Run executes command on the remote host (as the SSH user the connection was
+// authenticated as) and returns stdout, stderr and the process exit status.
+// It opens a second session channel on the same underlying SSH client that the
+// D-Bus bridge rides — no new connection, no new host-key prompt, no new
+// authentication — so the same trust / known_hosts / elicitation setup that the
+// D-Bus calls rely on applies to the command. Reads are bounded by ctx.
+func (c *Conn) Run(ctx context.Context, command string) (string, string, int, error) {
+	if c.client == nil {
+		return "", "", 0, fmt.Errorf("extdbus: no SSH connection to run %q on", command)
+	}
+	ch, requests, err := c.client.OpenChannel("session", nil)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("extdbus: open session channel: %w", err)
+	}
+
+	defer ch.Close()
+
+	// consume the channel's requests: capture the process exit-status and ack
+	// every request so the remote side never blocks waiting on a reply
+	var exitStatus int
+	exitDone := make(chan struct{})
+	go func() {
+		defer close(exitDone)
+		for req := range requests {
+			if req.Type == "exit-status" && len(req.Payload) >= 4 {
+				exitStatus = int(req.Payload[1])
+			}
+			req.Reply(true, nil)
+		}
+	}()
+
+	if ok, err := ch.SendRequest("exec", false, ssh.Marshal(struct {
+		Command string
+	}{command})); err != nil {
+		return "", "", 0, fmt.Errorf("extdbus: exec request: %w", err)
+	} else if !ok {
+		return "", "", 0, fmt.Errorf("extdbus: exec request for %q was not accepted", command)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cErr := make(chan error, 2)
+	go func() { _, err := io.Copy(&stdout, ch); cErr <- err }()
+	go func() { _, err := io.Copy(&stderr, ch.Stderr()); cErr <- err }()
+
+	select {
+	case e := <-cErr:
+		if e != nil && e != io.EOF {
+			return stdout.String(), stderr.String(), exitStatus, fmt.Errorf("extdbus: run %q: %w", command, e)
+		}
+	case <-ctx.Done():
+		return stdout.String(), stderr.String(), exitStatus, ctx.Err()
+	}
+	select {
+	case e := <-cErr:
+		if e != nil && e != io.EOF {
+			return stdout.String(), stderr.String(), exitStatus, fmt.Errorf("extdbus: run %q: %w", command, e)
+		}
+	case <-ctx.Done():
+		return stdout.String(), stderr.String(), exitStatus, ctx.Err()
+	}
+
+	// both streams are drained; close the channel on our side and wait for the
+	// requests stream to run out so the exit-status has been captured
+	_ = ch.CloseWrite()
+	select {
+	case <-exitDone:
+	case <-ctx.Done():
+		return stdout.String(), stderr.String(), exitStatus, ctx.Err()
+	}
+
+	return stdout.String(), stderr.String(), exitStatus, nil
 }

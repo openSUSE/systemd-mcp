@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,10 +38,24 @@ const (
 	accessUser                     // only the files the calling user may read, i.e. its own user-<uid>.journal
 )
 
+// RemoteRunner executes a command on the host named hostName and returns the
+// command's stdout, stderr and process exit status. It is implemented by the
+// systemd connection for registered remote hosts (over SSH, reusing that
+// host's trust / known_hosts setup). When nil, HostLog is restricted to the
+// local journal of the host that systemd-mcp itself runs on.
+type RemoteRunner interface {
+	RunRemote(ctx context.Context, req *mcp.CallToolRequest, hostName, command string) (string, string, int, error)
+}
+
 type HostLog struct {
 	journal *sdjournal.Journal
 	access  journalAccess
-	Auth    auth.AuthKeeper
+	// Auth is the authentication gatekeeper for local reads.
+	Auth auth.AuthKeeper
+	// Remote, when non-nil, enables reading the journal of a registered remote
+	// host by executing journalctl on that host and streaming the output back.
+	// Local reads (host == "localhost" / empty) never use this.
+	Remote RemoteRunner
 }
 
 // Close the log and underlying journal
@@ -49,7 +64,7 @@ func (log *HostLog) Close() error {
 }
 
 type ListLogParams struct {
-	Host      string    `json:"host,omitempty" jsonschema:"Optional; defaults to the local machine (os.Hostname()). Note: this tool always reads from the local journal, regardless of the value."`
+	Host      string    `json:"host,omitempty" jsonschema:"Optional; defaults to the local machine (os.Hostname()). 'localhost' (and the empty value) reads this machine's journal. Any other value must be a host registered with the set_host tool first, in which case the journal is read on that host via journalctl over the SSH connection."`
 	Count     int       `json:"count,omitempty" jsonschema:"Optional; defaults to 100. Number of log lines to output."`
 	Offset    int       `json:"offset,omitempty" jsonschema:"Optional; defaults to 0. Number of newest log entries to skip (for pagination)."`
 	From      time.Time `json:"from,omitempty" jsonschema:"Optional. Start time for filtering logs (RFC3339); omit to include older entries up to 'count'."`
@@ -335,10 +350,140 @@ func logResult(res ListLogResult) (*mcp.CallToolResult, any, error) {
 	}, nil, nil
 }
 
+// listLogRemote executes journalctl on a registered remote host via the SSH
+// connection and parses the resulting JSON events into ListLogResult. The
+// command inherits the host's SSH auth, known_hosts and (via systemd's
+// Connection.RunRemote) its accepted-host-keys store — so no additional
+// transport, trust or elicitation machinery is needed compared to the local
+// path.
+func (sj *HostLog) listLogRemote(ctx context.Context, req *mcp.CallToolRequest, params *ListLogParams) (*mcp.CallToolResult, any, error) {
+	if sj.Remote == nil {
+		return nil, nil, fmt.Errorf("no remote SSH connection available for host %q", params.Host)
+	}
+	args := []string{"--output", "json"}
+	if n := params.Count; n > 0 {
+		args = append(args, "-n", strconv.Itoa(n))
+	} else {
+		args = append(args, "-n", "100") // journalctl without -n would stream the whole journal
+	}
+	if !params.AllBoots && params.From.IsZero() && params.To.IsZero() {
+		// the local default is the most recent boot; preserve that when the
+		// caller did not explicitly ask for a time range. When a range is set,
+		// --this-boot would silently drop entries outside the range.
+		args = append(args, "--this-boot")
+	}
+	if !params.From.IsZero() {
+		args = append(args, "--since", params.From.UTC().Format(time.RFC3339))
+	}
+	if !params.To.IsZero() {
+		args = append(args, "--until", params.To.UTC().Format(time.RFC3339))
+	}
+	if len(params.Unit) > 0 {
+		args = append(args, "-u", params.Unit[0])
+	}
+	if params.Pattern != "" {
+		args = append(args, "-g", params.Pattern)
+	}
+
+	stdout, stderr, code, err := sj.Remote.RunRemote(ctx, req, params.Host, "journalctl "+strings.Join(args, " "))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to run journalctl on %q: %w", params.Host, err)
+	}
+	if code != 0 {
+		return nil, nil, fmt.Errorf("journalctl exited with status %d on %q: %s", code, params.Host, strings.TrimSpace(stderr))
+	}
+
+	// journalctl -o json emits one JSON object per line.
+	var messages []LogOutput
+	uniqIdentifiers := map[string]bool{}
+	uniqUnitName := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			RealtimeTimestamp string `json:"__REALTIME_TIMESTAMP"`
+			Message           string `json:"MESSAGE"`
+			SyslogIdentifier  string `json:"SYSLOG_IDENTIFIER"`
+			SystemdUnit       string `json:"_SYSTEMD_UNIT"`
+			SystemdUserUnit   string `json:"_SYSTEMD_USER_UNIT"`
+			Exe               string `json:"_EXE"`
+			BootID            string `json:"_BOOT_ID"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return nil, nil, fmt.Errorf("failed to parse journalctl JSON line: %w", err)
+		}
+		tsMicros, err2 := strconv.ParseInt(ev.RealtimeTimestamp, 10, 64)
+		if err2 != nil || tsMicros <= 0 {
+			continue
+		}
+		timestamp := time.UnixMicro(tsMicros)
+		if !params.From.IsZero() && timestamp.Before(params.From) {
+			continue
+		}
+		if !params.To.IsZero() && timestamp.After(params.To) {
+			continue
+		}
+		m := LogOutput{
+			Time:       timestamp,
+			Identifier: ev.SyslogIdentifier,
+			UnitName:   ev.SystemdUnit,
+			ExeName:    ev.Exe,
+			Msg:        ev.Message,
+		}
+		if params.AllBoots {
+			m.Boot = ev.BootID
+		}
+		if m.Identifier == "" {
+			m.Identifier = fmt.Sprintf("%s:%s", ev.SystemdUnit, ev.SystemdUserUnit)
+		}
+		if m.Identifier != "" {
+			uniqIdentifiers[m.Identifier] = true
+		}
+		if m.UnitName != "" {
+			uniqUnitName[m.UnitName] = true
+		}
+		messages = append(messages, m)
+	}
+
+	res := ListLogResult{
+		Host:       util.HostName(params.Host),
+		NrMessages: len(messages),
+		Messages:   messages,
+	}
+	if len(uniqIdentifiers) == 1 {
+		for ident := range uniqIdentifiers {
+			res.Identifier = ident
+		}
+		for i := range messages {
+			messages[i].Identifier = ""
+		}
+	}
+	if len(uniqUnitName) == 1 {
+		for u := range uniqUnitName {
+			res.UnitName = u
+		}
+		for i := range messages {
+			messages[i].UnitName = ""
+		}
+	}
+	return logResult(res)
+}
+
 // get the lat log entries for a given unit, else just the last messages
 func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params *ListLogParams) (*mcp.CallToolResult, any, error) {
 	// 'localhost' is a synonym for the local machine, so resolve the effective host
 	slog.Debug("ListLog called", "resolved_host", util.HostName(params.Host))
+	// a non-local host is not this machine: read its journal by running
+	// journalctl on the remote host over the SSH connection and parsing the
+	// JSON events. This sidesteps the need for a local journal handle (which
+	// sdjournal.Journal can never reach over the D-Bus bridge anyway).
+	if params.Host != "" && !util.IsLocal(params.Host) {
+		if sj.Remote == nil {
+			return nil, nil, fmt.Errorf("no remote SSH connection available for host %q; register it with the set_host tool or run systemd-mcp on that host", params.Host)
+		}
+		return sj.listLogRemote(ctx, req, params)
+	}
 	// always init the host log via self initialization, not via init or
 	allowed, err := sj.self_init(ctx)
 	if err != nil {

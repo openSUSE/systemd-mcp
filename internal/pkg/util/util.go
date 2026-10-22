@@ -30,6 +30,12 @@ func LocalHostName() string {
 	return "localhost"
 }
 
+// IsLocal reports whether host names this machine (the empty value and
+// "localhost" are synonyms for the local machine).
+func IsLocal(host string) bool {
+	return host == "" || strings.EqualFold(host, "localhost")
+}
+
 // EncodeWithHost returns value encoded alongside a top-level "host" field that
 // carries the local machine's hostname. value is normalized to a JSON object
 // first (the same representation the toon encoder produces for structs), so

@@ -72,6 +72,51 @@ func TestListLogForTimeRangeWithoutUnit(t *testing.T) {
 
 // without the gatekeeper package polkit can't grant its action, which must not
 // block the journal files the calling user may read anyway
+// stubRunner lets tests inject deterministic "remote" journalctl outputs
+// without opening any SSH session.
+type stubRunner struct {
+	stdout string
+	stderr string
+	code   int
+	err    error
+}
+
+func (s stubRunner) RunRemote(_ context.Context, _ *mcp.CallToolRequest, _, _ string) (string, string, int, error) {
+	return s.stdout, s.stderr, s.code, s.err
+}
+
+func TestListLogRemoteUsesRunner(t *testing.T) {
+	now := time.Now()
+	jline := func(ts time.Time, msg, ident, unit string) string {
+		b, _ := json.Marshal(map[string]string{
+			"__REALTIME_TIMESTAMP": fmt.Sprintf("%d", ts.UnixNano()/1000),
+			"MESSAGE":            msg,
+			"SYSLOG_IDENTIFIER":  ident,
+			"_SYSTEMD_UNIT":      unit,
+		})
+		return string(b)
+	}
+	stdout := jline(now, "hello", "app", "app.service") + "\n" +
+		jline(now.Add(-time.Minute), "world", "app", "app.service") + "\n"
+
+	sj := &HostLog{
+		Auth:   unregisteredAuth{},
+		Remote: stubRunner{stdout: stdout},
+	}
+	res, _, err := sj.ListLog(context.Background(), nil, &ListLogParams{
+		Host:  "some-remote",
+		Count: 10,
+		Unit:  []string{"^app\\.service$"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	var out ListLogResult
+	require.NoError(t, json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &out))
+	assert.Equal(t, 2, out.NrMessages)
+	assert.Equal(t, "some-remote", out.Host)
+	assert.Equal(t, "app.service", out.UnitName)
+}
+
 func TestSelfInitWithoutPolkitPolicy(t *testing.T) {
 	sj := &HostLog{journal: &sdjournal.Journal{}, Auth: unregisteredAuth{}}
 	if sj.isJournalGroupMember() {
