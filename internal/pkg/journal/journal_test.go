@@ -21,6 +21,56 @@ func TestCreateListLogsSchema(t *testing.T) {
 	assert.Contains(t, schema.Properties, "count")
 	assert.Contains(t, schema.Properties, "offset")
 	assert.Contains(t, schema.Properties, "unit")
+	assert.Contains(t, schema.Properties, "from")
+	assert.Contains(t, schema.Properties, "to")
+}
+
+func TestParseTimeRelative(t *testing.T) {
+	now := time.Now()
+
+	cases := []struct {
+		in   string
+		want time.Time
+		tol  time.Duration
+	}{
+		{"6h", now.Add(-6 * time.Hour), 2 * time.Second},
+		{"1d", now.Add(-24 * time.Hour), 5 * time.Second},
+		{"90m", now.Add(-90 * time.Minute), 2 * time.Second},
+		{"-6h", now.Add(-6 * time.Hour), 2 * time.Second},
+		{"-1d", now.Add(-24 * time.Hour), 5 * time.Second},
+		{"+1d", now.Add(24 * time.Hour), 5 * time.Second},
+		{"now", now, 5 * time.Second},
+		{"100ms", now.Add(-100 * time.Millisecond), 50 * time.Millisecond},
+		{"-3d12h", now.Add(-3*24*time.Hour - 12*time.Hour), 5 * time.Second},
+	}
+	for _, c := range cases {
+		got, err := ParseTime(c.in)
+		require.NoError(t, err, "ParseTime(%q)", c.in)
+		assert.Truef(t, got.After(c.want.Add(-c.tol)) && got.Before(c.want.Add(c.tol)),
+			"ParseTime(%q) = %s, want ~%s", c.in, got, c.want)
+	}
+
+	// sub-millisecond units are intentionally rejected
+	for _, bad := range []string{"1ns", "500ns", "1us", "2500us", "-1ms1ns", "+1us"} {
+		_, err := ParseTime(bad)
+		require.Errorf(t, err, "ParseTime(%q) should reject sub-millisecond units", bad)
+	}
+
+	_, err := ParseTime("not-a-time")
+	assert.Error(t, err)
+}
+
+func TestParseTimeFromJSON(t *testing.T) {
+	s := struct {
+		From journalTime `json:"from"`
+		To   journalTime `json:"to"`
+	}{}
+	require.NoError(t, json.Unmarshal([]byte(`{"from":"6h","to":"+1d"}`), &s))
+	assert.False(t, s.From.IsZero())
+	assert.False(t, s.To.IsZero())
+	now := time.Now()
+	assert.Truef(t, s.From.Time().After(now.Add(-7*time.Hour)) && s.From.Time().Before(now.Add(-5*time.Hour)),
+		"from should be ~now-6h, got %s", s.From.Time())
 }
 
 // an AuthKeeper which always fails as polkit doesn't know the action
@@ -49,8 +99,8 @@ func TestListLogForTimeRangeWithoutUnit(t *testing.T) {
 
 	res, _, err := sj.ListLog(context.Background(), nil, &ListLogParams{
 		Count:    10,
-		From:     from,
-		To:       to,
+		From:     journalTime(from),
+		To:       journalTime(to),
 		AllBoots: true,
 	})
 	require.NoError(t, err, "getting logs for a time range without a unit must not fail")
@@ -90,9 +140,9 @@ func TestListLogRemoteUsesRunner(t *testing.T) {
 	jline := func(ts time.Time, msg, ident, unit string) string {
 		b, _ := json.Marshal(map[string]string{
 			"__REALTIME_TIMESTAMP": fmt.Sprintf("%d", ts.UnixNano()/1000),
-			"MESSAGE":            msg,
-			"SYSLOG_IDENTIFIER":  ident,
-			"_SYSTEMD_UNIT":      unit,
+			"MESSAGE":              msg,
+			"SYSLOG_IDENTIFIER":    ident,
+			"_SYSTEMD_UNIT":        unit,
 		})
 		return string(b)
 	}

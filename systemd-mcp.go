@@ -254,7 +254,7 @@ func NewRootCmd() *cobra.Command {
 					Tool: &mcp.Tool{
 						Title:       "List system log",
 						Name:        "list_log",
-						Description: "Get the last log entries for the given service or unit.",
+						Description: "Get the last log entries for the given service or unit. The from/to time fields accept an RFC3339 timestamp, 'now', or a relative offset from now using units ms, s, m, h, d, w, y such as '6h', '1d', '90m', '-1d' (that much before now) or '+1d' (that much after now). Millisecond is the finest resolution.",
 						InputSchema: journal.CreateListLogsSchema(),
 					},
 					Register: func(server *mcp.Server, tool *mcp.Tool) {
