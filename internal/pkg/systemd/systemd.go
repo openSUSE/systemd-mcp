@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -44,17 +45,67 @@ type Connection struct {
 	// connected lazily, per call, from the registry.
 	dbus     DbusConnection
 	rchannel chan string
+	// verifyConnect is invoked when a remote host is registered to establish a
+	// real connection (SSH auth, host-key check and the D-Bus handshake) so the
+	// registration can confirm the host is actually reachable and, if needed,
+	// elicit the user about an untrusted host key. It defaults to the standard
+	// dialRemote; tests override it to exercise the success/failure paths
+	// deterministically.
+	verifyConnect func(ctx context.Context, h HostInfo, session *mcp.ServerSession) error
+	// fetchOSRelease reads the host's /etc/os-release over the same trusted
+	// SSH connection the D-Bus bridge rides on, so a registration can capture
+	// the underlying OS without a second connection or auth prompt. It returns
+	// the raw file content; the caller parses and stores it on HostInfo. It
+	// defaults to a RunRemote of `cat /etc/os-release`; tests override it to
+	// deterministically return canned content or an error.
+	fetchOSRelease func(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error)
 }
 
 // NewSystem builds a host-aware connection. It is local-bus independent: the
 // local bus is opened lazily via ConnectLocal so the set_host tool stays usable
 // even where no local system bus is available.
 func NewSystem(auth auth.AuthKeeper, reg *Registry) *Connection {
-	return &Connection{
+	c := &Connection{
 		reg:      reg,
 		auth:     auth,
 		rchannel: make(chan string, 1),
 	}
+	c.verifyConnect = c.verifyHostConnect
+	c.fetchOSRelease = c.fetchRemoteOSRelease
+	return c
+}
+
+// fetchRemoteOSRelease reads the host's /etc/os-release over the same trusted
+// SSH connection the D-Bus bridge rides on (directly from the HostInfo, so it
+// works even before the host is stored in the registry), meaning no second
+// connection, no new auth, and no new host-key prompt. It returns the raw file
+// content; the caller parses and stores it on HostInfo. Any error is non-fatal
+// to registration — the OS is simply left empty.
+func (conn *Connection) fetchRemoteOSRelease(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error) {
+	stdout, _, code, err := conn.runOnHost(ctx, h, req, "cat /etc/os-release 2>/dev/null")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("cat /etc/os-release exited with status %d: %s", code, strings.TrimSpace(stdout))
+	}
+	return stdout, nil
+}
+
+// verifyHostConnect establishes a real connection (SSH auth, host-key check
+// and the D-Bus handshake) to h so a registration can confirm the host is
+// reachable and, if needed, elicit the user about an untrusted host key. The
+// connection is torn down again before returning. Tests may override
+// conn.verifyConnect to exercise the success/failure paths deterministically.
+func (conn *Connection) verifyHostConnect(ctx context.Context, h HostInfo, session *mcp.ServerSession) error {
+	c, err := dialRemote(ctx, h,
+		func(key ssh.PublicKey) bool { return conn.reg.IsTrusted(h.Name, key) },
+		func(key ssh.PublicKey) bool { return conn.acceptHostKey(ctx, session, h, key) })
+	if err != nil {
+		return err
+	}
+	c.Close()
+	return nil
 }
 
 // ConnectLocal opens this machine's own system bus for the local tools.
@@ -136,7 +187,14 @@ func (conn *Connection) RunRemote(ctx context.Context, req *mcp.CallToolRequest,
 	if info.IsLocal() {
 		return "", "", 0, ErrNoLocalBus
 	}
+	return conn.runOnHost(ctx, info, req, command)
+}
 
+// runOnHost dials the given (registered or not) remote host and runs command
+// on it over the SSH session channel. It takes the HostInfo directly so it can
+// be used for a host being registered (not yet in the registry), reusing the
+// same trusted-store / host-key elicitation as every other remote call.
+func (conn *Connection) runOnHost(ctx context.Context, info HostInfo, req *mcp.CallToolRequest, command string) (string, string, int, error) {
 	var session *mcp.ServerSession
 	if req != nil {
 		session = req.Session

@@ -160,12 +160,15 @@ func (c *Conn) Run(ctx context.Context, command string) (string, string, int, er
 		}
 	}()
 
-	if ok, err := ch.SendRequest("exec", false, ssh.Marshal(struct {
+	// Send "exec" without waiting for a reply (wantReply=false), matching the
+	// D-Bus bridge's openSessionExec. With wantReply=false the library always
+	// reports ok=false (see the Channel.SendRequest docs), so only an error
+	// signal means the request was rejected; the command's result is observed
+	// by draining stdout/stderr below.
+	if _, err := ch.SendRequest("exec", false, ssh.Marshal(struct {
 		Command string
 	}{command})); err != nil {
 		return "", "", 0, fmt.Errorf("extdbus: exec request: %w", err)
-	} else if !ok {
-		return "", "", 0, fmt.Errorf("extdbus: exec request for %q was not accepted", command)
 	}
 
 	var stdout, stderr bytes.Buffer

@@ -2,6 +2,7 @@ package systemd
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
 )
@@ -32,11 +33,124 @@ type HostInfo struct {
 	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to a known_hosts file (or ~/.ssh/known_hosts) for host-key verification."`
 	Insecure   bool   `json:"insecure,omitempty" jsonschema:"Whether the host accepts any SSH host key without verification (testing only)."`
 	RemoteCmd  string `json:"remote_cmd,omitempty" jsonschema:"Command run on the remote host (defaults to 'systemd-stdio-bridge')."`
+
+	// OS is the underlying OS of the host, captured best-effort from the
+	// host's own /etc/os-release at registration time. It is empty when it
+	// could not be read (e.g. no /etc/os-release, or the host was never
+	// actually connected to).
+	OS OSRelease `json:"os,omitempty" jsonschema:"The underlying operating system of this host, read from its /etc/os-release at registration time (empty when unknown)." `
+}
+
+// OSRelease is the subset of the remote host's /etc/os-release this server
+// cares about, captured best-effort at registration time so an MCP response can
+// report the underlying OS.
+type OSRelease struct {
+	Name        string `json:"name,omitempty"`
+	Variant     string `json:"variant,omitempty"`
+	Version     string `json:"version,omitempty"`
+	ID          string `json:"id,omitempty"`
+	IDLike      string `json:"id_like,omitempty"`
+	VersionID   string `json:"version_id,omitempty"`
+	PrettyName  string `json:"pretty_name,omitempty"`
+	ANSIColor   string `json:"ansi_color,omitempty"`
+	ANSIIconName string `json:"ansi_icon_name,omitempty"`
+}
+
+// String renders a short human/LLM readable label such as
+// "openSUSE Leap 15.6" (Name + Version) or, lacking that, the ID. It returns
+// "" when nothing usable was captured.
+func (o OSRelease) String() string {
+	if o.Name != "" && o.Version != "" {
+		return o.Name + " " + o.Version
+	}
+	if o.PrettyName != "" {
+		return o.PrettyName
+	}
+	if o.Name != "" {
+		return o.Name
+	}
+	return o.ID
 }
 
 // IsLocal reports whether h addresses this machine's own bus.
 func (h HostInfo) IsLocal() bool {
 	return h.Name == "" || h.Name == LocalHost
+}
+
+// parseOSRelease parses the KEY=VALUE lines of /etc/os-release into an
+// OSRelease. Lines that are not valid KEY=VALUE (comments, blank, malformed)
+// are ignored, so a partial or nonstandard file still yields the fields we
+// captured.
+func parseOSRelease(content string) OSRelease {
+	var rel OSRelease
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := line[:eq]
+		val := unquoteOSRelease(line[eq+1:])
+		switch key {
+		case "NAME":
+			rel.Name = val
+		case "VARIANT":
+			rel.Variant = val
+		case "VERSION":
+			rel.Version = val
+		case "ID":
+			rel.ID = val
+		case "ID_LIKE":
+			rel.IDLike = val
+		case "VERSION_ID":
+			rel.VersionID = val
+		case "PRETTY_NAME":
+			rel.PrettyName = val
+		case "ANSI_COLOR":
+			rel.ANSIColor = val
+		case "ANSI_ICON_NAME":
+			rel.ANSIIconName = val
+		}
+	}
+	return rel
+}
+
+// unquoteOSRelease strips the matching surrounding single or double quotes of a
+// value and, for double-quoted values, expands the minimal escape set
+// (\\" \\\\ and \\n) so it matches the value /etc/os-release intends.
+func unquoteOSRelease(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if s[0] == '\'' && s[len(s)-1] == '\'' {
+			return s[1 : len(s)-1]
+		}
+		if s[0] == '"' && s[len(s)-1] == '"' {
+			s = s[1 : len(s)-1]
+			var b strings.Builder
+			for i := 0; i < len(s); i++ {
+				c := s[i]
+				if c == '\\' && i+1 < len(s) {
+					switch s[i+1] {
+					case '"':
+						b.WriteByte('"')
+						i++
+						continue
+					case '\\':
+						b.WriteByte('\\')
+						i++
+						continue
+					case 'n':
+						b.WriteByte('\n')
+						i++
+						continue
+					}
+				}
+				b.WriteByte(c)
+			}
+			return b.String()
+		}
+	}
+	return s
 }
 
 // SetHostParams drives the set_host tool. Action selects the operation:

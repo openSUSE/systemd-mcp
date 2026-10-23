@@ -34,7 +34,7 @@ func CreateSetHostSchema() *jsonschema.Schema {
 }
 
 // SetHost implements the set_host tool: register / unregister / list.
-func (conn *Connection) SetHost(ctx context.Context, _ *mcp.CallToolRequest, params *SetHostParams) (*mcp.CallToolResult, any, error) {
+func (conn *Connection) SetHost(ctx context.Context, req *mcp.CallToolRequest, params *SetHostParams) (*mcp.CallToolResult, any, error) {
 	slog.Debug("SetHost called", "params", params)
 	if allowed, err := conn.auth.IsReadAuthorized(ctx); err != nil {
 		return nil, nil, err
@@ -53,7 +53,7 @@ func (conn *Connection) SetHost(ctx context.Context, _ *mcp.CallToolRequest, par
 		if params.Target == "" {
 			return nil, nil, fmt.Errorf("register: target (ssh host[:port]) is required for a remote host")
 		}
-		conn.reg.Register(HostInfo{
+		info := HostInfo{
 			Name:       params.Host,
 			Target:     params.Target,
 			User:       params.User,
@@ -62,9 +62,41 @@ func (conn *Connection) SetHost(ctx context.Context, _ *mcp.CallToolRequest, par
 			KnownHosts: params.KnownHosts,
 			Insecure:   params.Insecure,
 			RemoteCmd:  params.RemoteCmd,
-		})
-		slog.Debug("registered remote host", "host", params.Host, "target", params.Target)
-		return hostResult(fmt.Sprintf("registered host %q", params.Host))
+		}
+		// Establish a real connection now (SSH auth, host-key check, D-Bus
+		// handshake) so a reachable host is confirmed and an untrusted host key
+		// is elicited from the user at registration time. The host is stored
+		// only if this succeeds, so a failed registration drops an error.
+		verify := conn.verifyConnect
+		if verify == nil {
+			verify = conn.verifyHostConnect
+		}
+		var session *mcp.ServerSession
+		if req != nil {
+			session = req.Session
+		}
+		if err := verify(ctx, info, session); err != nil {
+			return nil, nil, fmt.Errorf("register: host %q is not usable: %w", params.Host, err)
+		}
+		// Best-effort: read the host's /etc/os-release over the same trusted
+		// connection so the registration (and `list` output afterwards) carries
+		// the underlying OS. Failure is logged, never fatal — the OS is simply
+		// left empty.
+		if fetch := conn.fetchOSRelease; fetch != nil {
+			if raw, err := fetch(ctx, req, info); err == nil {
+				info.OS = parseOSRelease(raw)
+			} else {
+				slog.Debug("couldn't read remote /etc/os-release; continuing without OS",
+					"host", params.Host, slog.Any("error", err))
+			}
+		}
+		conn.reg.Register(info)
+		slog.Debug("registered remote host", "host", params.Host, "target", params.Target, "os", info.OS.String())
+		msg := fmt.Sprintf("registered host %q", params.Host)
+		if o := info.OS.String(); o != "" {
+			msg += fmt.Sprintf(" (OS: %s)", o)
+		}
+		return hostResult(msg)
 	case "unregister":
 		if err := conn.reg.Unregister(params.Host); err != nil {
 			return nil, nil, err
