@@ -199,6 +199,28 @@ func (r *Registry) Unregister(name string) error {
 	return nil
 }
 
+// MoveTrust re-keys any trusted host keys from oldName to newName — used when a
+// registration resolves to a host name the user did not explicitly provide, so
+// an already-accepted (or just accepted) host key keeps matching lookups under
+// the new name.
+func (r *Registry) MoveTrust(oldName, newName string) {
+	if r == nil || oldName == "" || newName == "" || strings.ToLower(oldName) == strings.ToLower(newName) {
+		return
+	}
+	ol, nl := strings.ToLower(oldName), strings.ToLower(newName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k, ok := r.trusted[ol]
+	if !ok {
+		return
+	}
+	for i := range k {
+		k[i].Name = nl
+	}
+	r.trusted[nl] = append(r.trusted[nl], k...)
+	delete(r.trusted, ol)
+}
+
 // List returns the local host first, then the remote hosts in sorted order.
 func (r *Registry) List() []HostInfo {
 	r.mu.Lock()

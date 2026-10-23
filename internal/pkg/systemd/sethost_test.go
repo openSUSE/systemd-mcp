@@ -42,16 +42,21 @@ func TestSetHostActions(t *testing.T) {
 		return nil
 	}
 
-	// register a remote host
+	// register a remote host with a specific (non-generic) name: it is honored
 	_, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: "web1", Target: "10.0.0.5", User: "admin"})
 	assert.NoError(t, err)
 
-	// registering the local host is refused
-	_, _, err = conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: LocalHost, Target: "10.0.0.5"})
-	assert.Error(t, err)
+	// a generic host name (the local-host synonym) is not used as the
+	// identifier; the host is instead given a deterministic derived unique name
+	res, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: LocalHost, Target: "10.0.0.9"})
+	assert.NoError(t, err)
+	expected := uniqueNameForTarget("10.0.0.9")
+	assert.Contains(t, hostText(res), expected)
+	_, err = conn.reg.Get(expected)
+	assert.NoError(t, err, "the host must be registered under its derived name")
 
-	// list should include the local and web1 hosts
-	res, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "list"})
+	// list should include the local host, web1, and the derived name
+	res, _, err = conn.SetHost(ctx, nil, &SetHostParams{Action: "list"})
 	assert.NoError(t, err)
 	assert.Contains(t, hostText(res), "web1")
 	assert.Contains(t, hostText(res), LocalHost)
@@ -137,6 +142,152 @@ func TestSetHostRegisterSucceedsWhenOSReleaseUnavailable(t *testing.T) {
 	info, err := conn.reg.Get("web2")
 	assert.NoError(t, err)
 	assert.Empty(t, info.OS.String(), "OS must be empty when it could not be read")
+}
+
+// TestResolveHostName covers the naming rule: the remote /etc/hostname wins
+// when present and non-generic, otherwise the caller's (non-generic) name, and
+// otherwise a derived unique name; a generic caller name is never used.
+func TestResolveHostName(t *testing.T) {
+	// a real /etc/hostname is used directly
+	assert.Equal(t, "web1", resolveHostName("", "web1", "10.0.0.5"))
+	assert.Equal(t, "db.example.com", resolveHostName("ignored", "db.example.com", "10.0.0.7"))
+
+	// empty /etc/hostname falls back to a non-generic caller name
+	assert.Equal(t, "web1", resolveHostName("web1", "", "10.0.0.5"))
+
+	// a generic /etc/hostname falls back to a non-generic caller name
+	assert.Equal(t, "web1", resolveHostName("web1", "linux", "10.0.0.5"))
+	assert.Equal(t, "myhost", resolveHostName("myhost", LocalHost, "10.0.0.5"))
+
+	// generic /etc/hostname plus a generic (or empty) caller name yields a
+	// deterministic unique name derived from the target
+	assert.Equal(t, uniqueNameForTarget("10.0.0.5"), resolveHostName(LocalHost, "linux", "10.0.0.5"))
+	assert.Equal(t, uniqueNameForTarget("10.0.0.5"), resolveHostName("", "", "10.0.0.5"))
+	assert.Equal(t, uniqueNameForTarget("10.0.0.5"), resolveHostName("", "localhost", "10.0.0.5"))
+
+	// a caller name equal to the local-host synonym is never used verbatim
+	assert.Equal(t, uniqueNameForTarget("10.0.0.5"), resolveHostName(LocalHost, "", "10.0.0.5"))
+}
+
+// TestUniqueNameForTarget checks the derived name is stable per target and that
+// different targets produce different names.
+func TestUniqueNameForTarget(t *testing.T) {
+	a := uniqueNameForTarget("10.0.0.5")
+	b := uniqueNameForTarget("10.0.0.6")
+	assert.Equal(t, a, uniqueNameForTarget("10.0.0.5"), "same target -> same name")
+	assert.NotEqual(t, a, b, "different targets -> different names")
+	for _, n := range []string{a, b} {
+		assert.NotEmpty(t, n)
+		assert.NotEqual(t, LocalHost, strings.ToLower(n))
+		assert.False(t, isGenericName(n))
+	}
+}
+
+// TestSetHostRegisterDerivesNameFromHostname verifies registration uses the
+// remote /etc/hostname when it is present and non-generic, and reports that
+// name in the reply and in `list`.
+func TestSetHostRegisterDerivesNameFromHostname(t *testing.T) {
+	auth, _ := auth_pkg.NewNoAuth(true, true)
+	conn := &Connection{
+		reg:      NewRegistry(),
+		auth:     auth,
+		rchannel: make(chan string, 1),
+	}
+	ctx := context.Background()
+	conn.verifyConnect = func(ctx context.Context, h HostInfo, session *mcp.ServerSession) error { return nil }
+	conn.fetchHostname = func(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error) {
+		return "dbserver9", nil
+	}
+
+	// The caller passes a generic name; the remote /etc/hostname should win.
+	res, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: LocalHost, Target: "10.0.0.5"})
+	assert.NoError(t, err)
+	assert.Contains(t, hostText(res), "dbserver9")
+	_, err = conn.reg.Get("dbserver9")
+	assert.NoError(t, err)
+
+	// and it should appear in `list`
+	lres, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "list"})
+	assert.NoError(t, err)
+	assert.Contains(t, hostText(lres), "dbserver9")
+}
+
+// TestSetHostRegisterGenericHostnameFallsBackToCaller verifies that when the
+// remote /etc/hostname is generic (e.g. "linux"), the caller's non-generic
+// name is used instead.
+func TestSetHostRegisterGenericHostnameFallsBackToCaller(t *testing.T) {
+	auth, _ := auth_pkg.NewNoAuth(true, true)
+	conn := &Connection{
+		reg:      NewRegistry(),
+		auth:     auth,
+		rchannel: make(chan string, 1),
+	}
+	ctx := context.Background()
+	conn.verifyConnect = func(ctx context.Context, h HostInfo, session *mcp.ServerSession) error { return nil }
+	conn.fetchHostname = func(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error) {
+		return "linux", nil
+	}
+
+	res, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: "web1", Target: "10.0.0.5"})
+	assert.NoError(t, err)
+	assert.Contains(t, hostText(res), "web1")
+	_, err = conn.reg.Get("web1")
+	assert.NoError(t, err)
+}
+
+// TestSetHostRegisterGenericHostnameAndCallerYieldsUnique verifies that when
+// both the remote /etc/hostname and the caller's name are generic (or empty), a
+// deterministic unique name derived from the target is used and reported.
+func TestSetHostRegisterGenericHostnameAndCallerYieldsUnique(t *testing.T) {
+	auth, _ := auth_pkg.NewNoAuth(true, true)
+	conn := &Connection{
+		reg:      NewRegistry(),
+		auth:     auth,
+		rchannel: make(chan string, 1),
+	}
+	ctx := context.Background()
+	conn.verifyConnect = func(ctx context.Context, h HostInfo, session *mcp.ServerSession) error { return nil }
+	conn.fetchHostname = func(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error) {
+		return "linux", nil
+	}
+
+	expected := uniqueNameForTarget("10.0.0.5")
+	// caller name is a generic placeholder ("linux"), so it must not be used
+	_, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: "linux", Target: "10.0.0.5"})
+	assert.NoError(t, err)
+	_, err = conn.reg.Get(expected)
+	assert.NoError(t, err, "must be registered under the derived unique name")
+	_, err = conn.reg.Get("linux")
+	assert.Error(t, err, "the generic name must not be used as the identifier")
+}
+
+// TestSetHostRegisterHostnameUnreadable still registers (best-effort), deriving
+// its name from the caller/target inputs.
+func TestSetHostRegisterHostnameUnreadable(t *testing.T) {
+	auth, _ := auth_pkg.NewNoAuth(true, true)
+	conn := &Connection{
+		reg:      NewRegistry(),
+		auth:     auth,
+		rchannel: make(chan string, 1),
+	}
+	ctx := context.Background()
+	conn.verifyConnect = func(ctx context.Context, h HostInfo, session *mcp.ServerSession) error { return nil }
+	conn.fetchHostname = func(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error) {
+		return "", fmt.Errorf("cat: /etc/hostname: No such file or directory")
+	}
+
+	// caller supplied a specific name -> it is used
+	_, _, err := conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: "web1", Target: "10.0.0.5"})
+	assert.NoError(t, err)
+	_, err = conn.reg.Get("web1")
+	assert.NoError(t, err)
+
+	// no usable name anywhere -> unique derived name
+	expected := uniqueNameForTarget("10.0.0.6")
+	_, _, err = conn.SetHost(ctx, nil, &SetHostParams{Action: "register", Host: "", Target: "10.0.0.6"})
+	assert.NoError(t, err)
+	_, err = conn.reg.Get(expected)
+	assert.NoError(t, err)
 }
 
 func TestParseOSRelease(t *testing.T) {

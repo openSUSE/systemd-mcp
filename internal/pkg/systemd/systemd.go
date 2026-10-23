@@ -59,6 +59,13 @@ type Connection struct {
 	// defaults to a RunRemote of `cat /etc/os-release`; tests override it to
 	// deterministically return canned content or an error.
 	fetchOSRelease func(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error)
+	// fetchHostname reads the host's /etc/hostname over the same trusted SSH
+	// connection, so a registration can derive a stable, human-meaningful host
+	// name from the remote machine itself. It returns the trimmed hostname (an
+	// empty string when the file is absent); the caller decides how to use it.
+	// It defaults to running `cat /etc/hostname 2>/dev/null`; tests override it
+	// to deterministically return canned content or an error.
+	fetchHostname func(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error)
 }
 
 // NewSystem builds a host-aware connection. It is local-bus independent: the
@@ -72,7 +79,23 @@ func NewSystem(auth auth.AuthKeeper, reg *Registry) *Connection {
 	}
 	c.verifyConnect = c.verifyHostConnect
 	c.fetchOSRelease = c.fetchRemoteOSRelease
+	c.fetchHostname = c.fetchRemoteHostname
 	return c
+}
+
+// fetchRemoteHostname reads the host's /etc/hostname over the same trusted SSH
+// connection fetchRemoteOSRelease rides on, so no second connection, auth or
+// host-key prompt is needed. It returns the trimmed hostname, or an empty
+// string (with a non-fatal error) when the file is absent.
+func (conn *Connection) fetchRemoteHostname(ctx context.Context, req *mcp.CallToolRequest, h HostInfo) (string, error) {
+	stdout, _, code, err := conn.runOnHost(ctx, h, req, "cat /etc/hostname 2>/dev/null")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("cat /etc/hostname exited with status %d: %s", code, strings.TrimSpace(stdout))
+	}
+	return strings.TrimSpace(stdout), nil
 }
 
 // fetchRemoteOSRelease reads the host's /etc/os-release over the same trusted
