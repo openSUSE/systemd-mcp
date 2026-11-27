@@ -83,13 +83,12 @@ func NewRootCmd() *cobra.Command {
 			slog.Debug("Logger initialized", "level", logLevel)
 
 			if exe, err := os.Executable(); err == nil {
-				if cwd, err := os.Getwd(); err == nil {
-					slog.Info("starting systemd-mcp",
-						"version", strings.TrimSpace(version),
-						"args", os.Args,
-						"path", exe,
-						"cwd", cwd)
-				}
+				cwd, _ := os.Getwd()
+				slog.Info("starting systemd-mcp",
+					"version", strings.TrimSpace(version),
+					"args", os.Args,
+					"path", exe,
+					"cwd", cwd)
 			}
 
 			var authorization authkeeper.AuthKeeper
@@ -113,7 +112,9 @@ func NewRootCmd() *cobra.Command {
 			} else {
 				authorization, err = authkeeper.NewPolkitAuth(DBusName, DBusPath, viper.GetUint32("timeout"))
 				if err != nil {
-					return fmt.Errorf("failed to setup dbus: %w", err)
+					slog.Warn("polkit based auth is not available, so write operations are not authorized via polkit",
+						slog.Any("error", err))
+					authorization, err = authkeeper.NewNoAuth(true, true)
 				}
 			}
 			defer authorization.Close()
@@ -133,11 +134,25 @@ func NewRootCmd() *cobra.Command {
 						slog.Debug("Session started", "ID", req.Session.ID())
 					},
 				})
-			systemConn, err := systemd.NewSystem(context.Background(), authorization)
-			if err != nil {
-				slog.Warn("couldn't add systemd tools", slog.Any("error", err))
-			} else if systemConn != nil && useToon {
+			hostRegistry := systemd.NewRegistry()
+			if hosts := viper.GetStringSlice("remote-hosts"); len(hosts) > 0 {
+				if err := systemd.PreconfigureHosts(hostRegistry, hosts); err != nil {
+					return fmt.Errorf("couldn't preconfigure remote hosts: %w", err)
+				}
+			}
+
+			systemConn := systemd.NewSystem(authorization, hostRegistry)
+			if useToon {
 				systemConn.Encoder.UseToon()
+			}
+			defer systemConn.Close()
+
+			// The local bus is opened when possible. When it isn't (e.g. a
+			// container without dbus), the local tools stay registered but return
+			// a clear "local system bus is not available" error, so remote hosts
+			// (via set_host) remain the only operable endpoints.
+			if err := systemConn.ConnectLocal(context.Background()); err != nil {
+				slog.Warn("local system bus unavailable; only remote hosts (via set_host) are operable", slog.Any("error", err))
 			}
 
 			tools := []struct {
@@ -145,69 +160,89 @@ func NewRootCmd() *cobra.Command {
 				Register func(server *mcp.Server, tool *mcp.Tool)
 			}{}
 
-			if systemConn != nil {
-				defer systemConn.Close()
-				tools = append(
-					tools,
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "List loaded units",
-							Name:        "list_loaded_units",
-							Description: fmt.Sprintf("List systemd units that are currently loaded in memory. Filter by states (%v) or patterns. Can return detailed properties.", systemd.ValidStates()),
-							InputSchema: systemd.CreateListLoadedUnitsSchema(),
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.ListLoadedUnits)
-						},
+			tools = append(
+				tools,
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "List loaded units",
+						Name:        "list_loaded_units",
+						Description: fmt.Sprintf("List systemd units that are currently loaded in memory. Filter by states (%v) or patterns. Can return detailed properties.", systemd.ValidStates()),
+						InputSchema: systemd.CreateListLoadedUnitsSchema(),
 					},
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "List unit files",
-							Name:        "list_unit_files",
-							Description: fmt.Sprintf("List all systemd unit files on disk. Filter by enablement states (%v) or patterns.", systemd.ValidUnitFileStates()),
-							InputSchema: systemd.CreateListUnitFilesSchema(),
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.ListUnitFiles)
-						},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.ListLoadedUnits)
 					},
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "Change unit state",
-							Name:        "change_unit_state",
-							Description: "Change the state of a unit or service (start, stop, restart, reload, enable, disable).",
-							InputSchema: systemd.CreateChangeInputSchema(),
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.ChangeUnitState)
-						},
+				},
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "List unit files",
+						Name:        "list_unit_files",
+						Description: fmt.Sprintf("List all systemd unit files on disk. Filter by enablement states (%v) or patterns.", systemd.ValidUnitFileStates()),
+						InputSchema: systemd.CreateListUnitFilesSchema(),
 					},
-					struct {
-						Tool     *mcp.Tool
-						Register func(server *mcp.Server, tool *mcp.Tool)
-					}{
-						Tool: &mcp.Tool{
-							Title:       "Check restart/reload status",
-							Name:        "check_restart_reload",
-							Description: "Check the reload or restart status of a unit. Can only be called if the restart or reload job timed out.",
-						},
-						Register: func(server *mcp.Server, tool *mcp.Tool) {
-							mcp.AddTool(server, tool, systemConn.CheckForRestartReloadRunning)
-						},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.ListUnitFiles)
 					},
-				)
-			}
+				},
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "Change unit state",
+						Name:        "change_unit_state",
+						Description: "Change the state of a unit or service (start, stop, restart, reload, enable, disable).",
+						InputSchema: systemd.CreateChangeInputSchema(),
+					},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.ChangeUnitState)
+					},
+				},
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "Check restart/reload status",
+						Name:        "check_restart_reload",
+						Description: "Check the reload or restart status of a unit. Can only be called if the restart or reload job timed out.",
+						InputSchema: systemd.GetRestsartReloadParamsSchema(),
+					},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.CheckForRestartReloadRunning)
+					},
+				},
+			)
+
+			// The host-management tool is always available, even when the local
+			// bus could not be opened, so hosts can still be registered and
+			// operated on.
+			tools = append(
+				tools,
+				struct {
+					Tool     *mcp.Tool
+					Register func(server *mcp.Server, tool *mcp.Tool)
+				}{
+					Tool: &mcp.Tool{
+						Title:       "Manage bus hosts",
+						Name:        "set_host",
+						Description: systemd.SetHostDescription(),
+						InputSchema: systemd.CreateSetHostSchema(),
+					},
+					Register: func(server *mcp.Server, tool *mcp.Tool) {
+						mcp.AddTool(server, tool, systemConn.SetHost)
+					},
+				},
+			)
 			syslog := journal.HostLog{
-				Auth: authorization,
+				Auth:   authorization,
+				Remote: systemConn,
 			}
 			if err != nil {
 				slog.Warn("couldn't open log, not adding journal tool", slog.Any("error", err))
@@ -219,7 +254,7 @@ func NewRootCmd() *cobra.Command {
 					Tool: &mcp.Tool{
 						Title:       "List system log",
 						Name:        "list_log",
-						Description: "Get the last log entries for the given service or unit.",
+						Description: "Get the last log entries for the given service or unit. The from/to time fields accept an RFC3339 timestamp, 'now', or a relative offset from now using units ms, s, m, h, d, w, y such as '6h', '1d', '90m', '-1d' (that much before now) or '+1d' (that much after now). Millisecond is the finest resolution.",
 						InputSchema: journal.CreateListLogsSchema(),
 					},
 					Register: func(server *mcp.Server, tool *mcp.Tool) {
@@ -242,7 +277,7 @@ func NewRootCmd() *cobra.Command {
 					Register: func(server *mcp.Server, tool *mcp.Tool) {
 						mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, args *file.GetFileParams) (*mcp.CallToolResult, any, error) {
 							slog.Debug("get_file called", "args", args)
-							res, out, err := file.GetFile(ctx, req, args, authorization)
+							res, out, err := file.GetFile(ctx, req, args, authorization, systemConn)
 							return res, out, err
 						})
 					},
@@ -390,22 +425,31 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	// keep flags in the order below so they appear grouped in --help
+	rootCmd.Flags().SortFlags = false
+
+	// connection (HTTP server, optional TLS)
 	rootCmd.Flags().String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
-	rootCmd.Flags().Bool("skip-tls-verify", false, "Skip TLS certificate verification for outbound requests (e.g. to OAuth2 controller)")
-	rootCmd.Flags().BoolVar(&useToon, "toon", false, "use token optimized object notation")
-	rootCmd.Flags().String("logfile", "", "if set, log to this file instead of stderr")
+	rootCmd.Flags().String("cert-file", "", "Path to server certificate file (PEM format) for TLS. Requires --key-file")
+	rootCmd.Flags().String("key-file", "", "Path to server private key file (PEM format) for TLS. Requires --cert-file")
+	// authentication
+	rootCmd.Flags().String("noauth", "", fmt.Sprintf("Disable authorization via dbus/oauth2, this parameter has to be set to %s to work.", magicNoauth))
 	rootCmd.Flags().String("controller", "", "oauth2 controller address")
+	rootCmd.Flags().Bool("skip-tls-verify", false, "Skip TLS certificate verification for outbound requests (e.g. to OAuth2 controller)")
+	rootCmd.Flags().Uint32("timeout", 5, "Set the timeout for authentication in seconds")
+	rootCmd.Flags().BoolP("allow-write", "w", false, "Authorize write to systemd or allow pending write if started without write")
+	rootCmd.Flags().BoolP("allow-read", "r", false, "Authorize read to systemd or allow pending read if started without read")
+	// logging
 	rootCmd.Flags().BoolP("verbose", "v", false, "Enable verbose logging")
 	rootCmd.Flags().BoolP("debug", "d", false, "Enable debug logging")
 	rootCmd.Flags().Bool("log-json", false, "Output logs in JSON format (machine-readable)")
+	rootCmd.Flags().String("logfile", "", "if set, log to this file instead of stderr")
+	// tools and output
 	rootCmd.Flags().Bool("list-tools", false, "List all available tools and exit")
-	rootCmd.Flags().BoolP("allow-write", "w", false, "Authorize write to systemd or allow pending write if started without write")
-	rootCmd.Flags().BoolP("allow-read", "r", false, "Authorize read to systemd or allow pending read if started without read")
 	rootCmd.Flags().StringSlice("enabled-tools", nil, "A list of tools to enable. Defaults to all tools.")
-	rootCmd.Flags().Uint32("timeout", 5, "Set the timeout for authentication in seconds")
-	rootCmd.Flags().String("noauth", "", fmt.Sprintf("Disable authorization via dbus/oauth2, this parameter has to be set to %s to work.", magicNoauth))
-	rootCmd.Flags().String("cert-file", "", "Path to server certificate file (PEM format) for TLS. Requires --key-file")
-	rootCmd.Flags().String("key-file", "", "Path to server private key file (PEM format) for TLS. Requires --cert-file")
+	rootCmd.Flags().BoolVar(&useToon, "toon", false, "use token optimized object notation")
+	// remote hosts (optional; can also be added at runtime with the set_host tool)
+	rootCmd.Flags().StringArray("remote-hosts", nil, "Preconfigure a remote host as name:target[,user=U][,key_file=K][,known_hosts=F][,insecure][,remote_cmd=C]; repeatable")
 
 	rootCmd.MarkFlagsRequiredTogether("cert-file", "key-file")
 	rootCmd.MarkFlagsMutuallyExclusive("noauth", "controller")

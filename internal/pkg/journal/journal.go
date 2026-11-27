@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/openSUSE/systemd-mcp/dbus"
 	"github.com/openSUSE/systemd-mcp/internal/pkg/man"
 	"github.com/openSUSE/systemd-mcp/internal/pkg/sdjournalw"
+	"github.com/openSUSE/systemd-mcp/internal/pkg/util"
 )
 
 // how much of the journal the opened handle covers
@@ -36,10 +39,24 @@ const (
 	accessUser                     // only the files the calling user may read, i.e. its own user-<uid>.journal
 )
 
+// RemoteRunner executes a command on the host named hostName and returns the
+// command's stdout, stderr and process exit status. It is implemented by the
+// systemd connection for registered remote hosts (over SSH, reusing that
+// host's trust / known_hosts setup). When nil, HostLog is restricted to the
+// local journal of the host that systemd-mcp itself runs on.
+type RemoteRunner interface {
+	RunRemote(ctx context.Context, req *mcp.CallToolRequest, hostName, command string) (string, string, int, error)
+}
+
 type HostLog struct {
 	journal *sdjournal.Journal
 	access  journalAccess
-	Auth    auth.AuthKeeper
+	// Auth is the authentication gatekeeper for local reads.
+	Auth auth.AuthKeeper
+	// Remote, when non-nil, enables reading the journal of a registered remote
+	// host by executing journalctl on that host and streaming the output back.
+	// Local reads (host == "localhost" / empty) never use this.
+	Remote RemoteRunner
 }
 
 // Close the log and underlying journal
@@ -47,15 +64,169 @@ func (log *HostLog) Close() error {
 	return log.journal.Close()
 }
 
+// journalTime is a time.Time that also accepts a relative or now-like reference
+// when decoded from JSON. This lets the journal tool take offsets such as '6h',
+// '1d' or '-1d' (mirroring journalctl's --since/--until "relative" feel) on top
+// of a full RFC3339 timestamp. The reference is resolved against the current
+// time at decode time.
+type journalTime time.Time
+
+// durationUnits is the set of time units accepted by parseFlexible. Millisecond
+// is the finest resolution we expose; sub-millisecond durations (ns, us) are
+// intentionally not accepted because they add no meaningful precision to log
+// filtering and just make the syntax noisier.
+var durationUnits = map[string]time.Duration{
+	"ms": time.Millisecond,
+	"s":  time.Second,
+	"m":  time.Minute,
+	"h":  time.Hour,
+	"d":  24 * time.Hour,
+	"w":  7 * 24 * time.Hour,
+	"y":  365 * 24 * time.Hour,
+}
+
+// parseFlexible parses str as a duration between "ms" (finest) and "y"
+// (coarsest), including d (day) and w (week) which Go's time.ParseDuration
+// does not support.
+func parseFlexible(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	var (
+		total   time.Duration
+		num     int64
+		haveNum bool
+	)
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c >= '0' && c <= '9' {
+			j := i
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+			n, err := strconv.ParseInt(s[i:j], 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid number in duration %q: %w", s, err)
+			}
+			num, haveNum = n, true
+			i = j
+			continue
+		}
+		// a unit token: read all consecutive letters
+		j := i
+		for j < len(s) && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z')) {
+			j++
+		}
+		if j == i {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
+		if !haveNum {
+			return 0, fmt.Errorf("duration %q has a unit before a number", s)
+		}
+		unit := strings.ToLower(s[i:j])
+		dur, ok := durationUnits[unit]
+		if !ok {
+			return 0, fmt.Errorf("unknown duration unit %q in %q", unit, s)
+		}
+		total += time.Duration(num) * dur
+		num, haveNum = 0, false
+		i = j
+	}
+	if total == 0 {
+		return 0, fmt.Errorf("duration %q is zero or invalid", s)
+	}
+	return total, nil
+}
+
+// ParseTime parses str into a time.Time. It accepts:
+//   - an empty string  -> the zero time (caller treats it as "unspecified")
+//   - "now"            -> the current time
+//   - a duration       -> an offset from now. Both a bare duration (e.g. "6h",
+//     "1d", "90m", "1w", "1y") and a '-'-prefixed one (e.g. "-6h", "-1d") are
+//     interpreted as that much BEFORE now ("6h" == "6 hours ago"). A '+'-
+//     prefixed duration (e.g. "+1d") is interpreted as that much after now.
+//   - otherwise        -> parsed as RFC3339 / RFC3339Nano / ISO-8601
+func ParseTime(str string) (time.Time, error) {
+	s := strings.TrimSpace(str)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if s == "now" {
+		return time.Now(), nil
+	}
+	switch {
+	case strings.HasPrefix(s, "+"):
+		if d, err := parseFlexible(s[1:]); err == nil {
+			return time.Now().Add(d), nil
+		}
+	case strings.HasPrefix(s, "-"):
+		if d, err := parseFlexible(s[1:]); err == nil {
+			return time.Now().Add(-d), nil
+		}
+		// "-..." is not a duration (e.g. "-2026-01-01T00:00:00Z"); fall
+		// through to timestamp parsing.
+	default:
+		if d, err := parseFlexible(s); err == nil {
+			// bare duration means "ago"
+			return time.Now().Add(-d), nil
+		}
+	}
+	return parseTimestamp(s)
+}
+
+func parseTimestamp(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// best-effort ISO-8601 (date with/without time, no offset)
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized time %q (expected RFC3339, 'now', or a duration using units ms, s, m, h, d, w, y such as 6h, 1d, 90m, -1d, +1w)", s)
+}
+
+func (jt *journalTime) UnmarshalJSON(data []byte) error {
+	// tolerate a raw JSON number (epoch seconds) just in case
+	var num float64
+	if err := json.Unmarshal(data, &num); err == nil {
+		*jt = journalTime(time.Unix(int64(num), 0))
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("time field %s: expected a string, number or null", string(data))
+	}
+	t, err := ParseTime(s)
+	if err != nil {
+		return err
+	}
+	*jt = journalTime(t)
+	return nil
+}
+
+func (jt journalTime) IsZero() bool {
+	return time.Time(jt).IsZero()
+}
+
+func (jt journalTime) Time() time.Time {
+	return time.Time(jt)
+}
+
 type ListLogParams struct {
-	Count     int       `json:"count,omitempty" jsonschema:"Number of log lines to output"`
-	Offset    int       `json:"offset,omitempty" jsonschema:"Number of newest log entries to skip for pagination"`
-	From      time.Time `json:"from,omitempty" jsonschema:"Start time for filtering logs"`
-	To        time.Time `json:"to,omitempty" jsonschema:"End time for filtering logs "`
-	Pattern   string    `json:"pattern,omitempty" jsonschema:"Regular expression pattern to filter log messages or units."`
-	Unit      []string  `json:"unit,omitempty" jsonschema:"Names of the service/unit from which to get the logs. Without an unit name the entries of all units are returned. The first field treated a regular expression if not set otherwise"`
-	ExactUnit bool      `json:"exact_unit,omitempty" jsonschema:"Treat the first name unit as exact idendtifier and not as regular expression"`
-	AllBoots  bool      `json:"allboots,omitempty" jsonschema:"Get the log entries from all boots, not just the active one"`
+	Host      string      `json:"host,omitempty" jsonschema:"Optional; defaults to the local machine (os.Hostname()). 'localhost' (and the empty value) reads this machine's journal. Any other value must be a host registered with the set_host tool first, in which case the journal is read on that host via journalctl over the SSH connection."`
+	Count     int         `json:"count,omitempty" jsonschema:"Optional; defaults to 100. Number of log lines to output."`
+	Offset    int         `json:"offset,omitempty" jsonschema:"Optional; defaults to 0. Number of newest log entries to skip (for pagination)."`
+	From      journalTime `json:"from,omitempty" jsonschema:"Optional. Start time for filtering logs. Accepts an RFC3339 timestamp (e.g. '2026-10-23T08:00:00Z'), 'now', or a duration offset from now using units ms, s, m, h, d, w, y: '6h', '1d', '90m' (or '-6h', '-1d') meaning that much before now, and '+6h' meaning that much after now. Millisecond is the finest resolution; sub-millisecond units (ns, us) are not accepted. Omit to include older entries up to 'count'."`
+	To        journalTime `json:"to,omitempty" jsonschema:"Optional. End time for filtering logs. Accepts an RFC3339 timestamp (e.g. '2026-10-23T08:00:00Z'), 'now', or a duration offset from now using units ms, s, m, h, d, w, y: '6h', '1d', '90m' (or '-6h', '-1d') meaning that much before now, and '+6h' meaning that much after now. Millisecond is the finest resolution; sub-millisecond units (ns, us) are not accepted. Omit to include the most recent entries."`
+	Pattern   string      `json:"pattern,omitempty" jsonschema:"Optional; defaults to empty (no filter). Regular expression pattern to filter log messages or units."`
+	Unit      []string    `json:"unit,omitempty" jsonschema:"Optional; defaults to empty (all units). Names of the service/unit from which to get the logs. The first element is treated as a regular expression unless exact_unit is true."`
+	ExactUnit bool        `json:"exact_unit,omitempty" jsonschema:"Optional; defaults to false. Treat the first unit string as an exact identifier rather than a regular expression."`
+	AllBoots  bool        `json:"allboots,omitempty" jsonschema:"Optional; defaults to false. When true, get log entries from all boots, not just the active one."`
 }
 
 type LogOutput struct {
@@ -87,7 +258,22 @@ type ListLogResult struct {
 var validManSection = regexp.MustCompile(man.ValidManSectionPattern)
 
 func CreateListLogsSchema() *jsonschema.Schema {
-	inputSchema, _ := jsonschema.For[ListLogParams](nil)
+	// journalTime is a custom type (so its JSON decoding can also accept
+	// relative offsets like '6h' or '-1d'), but in the schema it should be
+	// exposed as a plain string to the caller.
+	stringSchema := &jsonschema.Schema{Type: "string"}
+	opts := &jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeOf(journalTime{}):  stringSchema,
+			reflect.TypeOf(&journalTime{}): stringSchema,
+		},
+	}
+	inputSchema, err := jsonschema.For[ListLogParams](opts)
+	if err != nil {
+		// fall back to the default schema so the tool is at least usable
+		inputSchema, _ = jsonschema.For[ListLogParams](nil)
+	}
+	inputSchema.Properties["host"].Default = json.RawMessage("\"localhost\"")
 	inputSchema.Properties["count"].Default = json.RawMessage(`100`)
 	inputSchema.Properties["offset"].Default = json.RawMessage(`0`)
 	// inputSchema.Properties["pattern"].Default = json.RawMessage(`""`)
@@ -153,10 +339,14 @@ func (sj *HostLog) seekByTimeRange(count uint64, offset uint64, from time.Time, 
 		}
 	}
 
-	if n, err := sj.journal.PreviousSkip(count); err != nil {
-		return 0, fmt.Errorf("failed to move back entries: %w", err)
-	} else if n == 0 {
-		return 0, nil
+	// the cursor is already on the newest entry, so step back count-1 entries
+	// to have count entries in front of it. Hitting the head of the journal
+	// (n < count-1) is fine, the cursor still stands on an entry. Entries older
+	// than the start of the range are skipped while reading.
+	if count > 1 {
+		if _, err := sj.journal.PreviousSkip(count - 1); err != nil {
+			return 0, fmt.Errorf("failed to move back entries: %w", err)
+		}
 	}
 
 	return count, nil
@@ -332,8 +522,142 @@ func logResult(res ListLogResult) (*mcp.CallToolResult, any, error) {
 	}, nil, nil
 }
 
+// listLogRemote executes journalctl on a registered remote host via the SSH
+// connection and parses the resulting JSON events into ListLogResult. The
+// command inherits the host's SSH auth, known_hosts and (via systemd's
+// Connection.RunRemote) its accepted-host-keys store — so no additional
+// transport, trust or elicitation machinery is needed compared to the local
+// path.
+func (sj *HostLog) listLogRemote(ctx context.Context, req *mcp.CallToolRequest, params *ListLogParams) (*mcp.CallToolResult, any, error) {
+	if sj.Remote == nil {
+		return nil, nil, fmt.Errorf("no remote SSH connection available for host %q", params.Host)
+	}
+	from := params.From.Time()
+	to := params.To.Time()
+	args := []string{"--output", "json"}
+	if n := params.Count; n > 0 {
+		args = append(args, "-n", strconv.Itoa(n))
+	} else {
+		args = append(args, "-n", "100") // journalctl without -n would stream the whole journal
+	}
+	if !params.AllBoots && from.IsZero() && to.IsZero() {
+		// the local default is the most recent boot; preserve that when the
+		// caller did not explicitly ask for a time range. When a range is set,
+		// --this-boot would silently drop entries outside the range.
+		args = append(args, "--this-boot")
+	}
+	if !from.IsZero() {
+		args = append(args, "--since", from.UTC().Format(time.RFC3339))
+	}
+	if !to.IsZero() {
+		args = append(args, "--until", to.UTC().Format(time.RFC3339))
+	}
+	if len(params.Unit) > 0 {
+		args = append(args, "-u", params.Unit[0])
+	}
+	if params.Pattern != "" {
+		args = append(args, "-g", params.Pattern)
+	}
+
+	stdout, stderr, code, err := sj.Remote.RunRemote(ctx, req, params.Host, "journalctl "+strings.Join(args, " "))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to run journalctl on %q: %w", params.Host, err)
+	}
+	if code != 0 {
+		return nil, nil, fmt.Errorf("journalctl exited with status %d on %q: %s", code, params.Host, strings.TrimSpace(stderr))
+	}
+
+	// journalctl -o json emits one JSON object per line.
+	var messages []LogOutput
+	uniqIdentifiers := map[string]bool{}
+	uniqUnitName := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			RealtimeTimestamp string `json:"__REALTIME_TIMESTAMP"`
+			Message           string `json:"MESSAGE"`
+			SyslogIdentifier  string `json:"SYSLOG_IDENTIFIER"`
+			SystemdUnit       string `json:"_SYSTEMD_UNIT"`
+			SystemdUserUnit   string `json:"_SYSTEMD_USER_UNIT"`
+			Exe               string `json:"_EXE"`
+			BootID            string `json:"_BOOT_ID"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return nil, nil, fmt.Errorf("failed to parse journalctl JSON line: %w", err)
+		}
+		tsMicros, err2 := strconv.ParseInt(ev.RealtimeTimestamp, 10, 64)
+		if err2 != nil || tsMicros <= 0 {
+			continue
+		}
+		timestamp := time.UnixMicro(tsMicros)
+		if !from.IsZero() && timestamp.Before(from) {
+			continue
+		}
+		if !to.IsZero() && timestamp.After(to) {
+			continue
+		}
+		m := LogOutput{
+			Time:       timestamp,
+			Identifier: ev.SyslogIdentifier,
+			UnitName:   ev.SystemdUnit,
+			ExeName:    ev.Exe,
+			Msg:        ev.Message,
+		}
+		if params.AllBoots {
+			m.Boot = ev.BootID
+		}
+		if m.Identifier == "" {
+			m.Identifier = fmt.Sprintf("%s:%s", ev.SystemdUnit, ev.SystemdUserUnit)
+		}
+		if m.Identifier != "" {
+			uniqIdentifiers[m.Identifier] = true
+		}
+		if m.UnitName != "" {
+			uniqUnitName[m.UnitName] = true
+		}
+		messages = append(messages, m)
+	}
+
+	res := ListLogResult{
+		Host:       util.HostName(params.Host),
+		NrMessages: len(messages),
+		Messages:   messages,
+	}
+	if len(uniqIdentifiers) == 1 {
+		for ident := range uniqIdentifiers {
+			res.Identifier = ident
+		}
+		for i := range messages {
+			messages[i].Identifier = ""
+		}
+	}
+	if len(uniqUnitName) == 1 {
+		for u := range uniqUnitName {
+			res.UnitName = u
+		}
+		for i := range messages {
+			messages[i].UnitName = ""
+		}
+	}
+	return logResult(res)
+}
+
 // get the lat log entries for a given unit, else just the last messages
 func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params *ListLogParams) (*mcp.CallToolResult, any, error) {
+	// 'localhost' is a synonym for the local machine, so resolve the effective host
+	slog.Debug("ListLog called", "resolved_host", util.HostName(params.Host))
+	// a non-local host is not this machine: read its journal by running
+	// journalctl on the remote host over the SSH connection and parsing the
+	// JSON events. This sidesteps the need for a local journal handle (which
+	// sdjournal.Journal can never reach over the D-Bus bridge anyway).
+	if params.Host != "" && !util.IsLocal(params.Host) {
+		if sj.Remote == nil {
+			return nil, nil, fmt.Errorf("no remote SSH connection available for host %q; register it with the set_host tool or run systemd-mcp on that host", params.Host)
+		}
+		return sj.listLogRemote(ctx, req, params)
+	}
 	// always init the host log via self initialization, not via init or
 	allowed, err := sj.self_init(ctx)
 	if err != nil {
@@ -418,19 +742,20 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 	}
 
 	// Handle time-based filtering
+	from := params.From.Time()
+	to := params.To.Time()
 	maxCount := params.Count
 	if maxCount <= 0 {
 		maxCount = 100
 	}
-	if !params.From.IsZero() || !params.To.IsZero() {
-		nrEntries, err := sj.seekByTimeRange(uint64(maxCount), uint64(params.Offset), params.From, params.To)
+	if !from.IsZero() || !to.IsZero() {
+		nrEntries, err := sj.seekByTimeRange(uint64(maxCount), uint64(params.Offset), from, to)
 		if err != nil {
 			return nil, nil, err
 		}
 		if nrEntries == 0 {
 			// no entry in the range, the read head isn't on an entry so don't read one
-			host, _ := os.Hostname()
-			return logResult(ListLogResult{Host: host, Hint: sj.accessHint()})
+			return logResult(ListLogResult{Host: util.LocalHostName(), Hint: sj.accessHint()})
 		}
 	} else {
 		// Use original pagination logic when no time filters
@@ -440,8 +765,7 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 		}
 		if nrEntries == 0 {
 			// nothing matched, the read head isn't on an entry so don't read one
-			host, _ := os.Hostname()
-			return logResult(ListLogResult{Host: host, Hint: sj.accessHint()})
+			return logResult(ListLogResult{Host: util.LocalHostName(), Hint: sj.accessHint()})
 		}
 	}
 
@@ -451,7 +775,7 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 	uniqUnitName := make(map[string]bool)
 	uniqUnitNameStr := ""
 	uniqExeName := make(map[string]bool)
-	host, _ := os.Hostname()
+	host := util.LocalHostName()
 
 	var regexPattern *regexp.Regexp
 	if params.Pattern != "" {
@@ -472,10 +796,21 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 
 		timestamp := time.Unix(0, int64(entry.RealtimeTimestamp)*int64(time.Microsecond))
 
-		// we scan forward from the newest entry of the range, so once we run
-		// into an entry older than the start of the range the scan is done
-		if !params.From.IsZero() && timestamp.Before(params.From) {
+		// the scan starts up to count entries before the newest entry of the
+		// range, so it may begin with entries older than the range, skip them
+		// without using up the count. The range ends before 'to'.
+		if !to.IsZero() && !timestamp.Before(to) {
 			break
+		}
+		if !from.IsZero() && timestamp.Before(from) {
+			ret, err := sj.journal.Next()
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to read next entry: %w", err)
+			}
+			if ret == 0 {
+				break
+			}
+			continue
 		}
 
 		if regexPattern != nil {
@@ -518,9 +853,6 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 		}
 		if params.AllBoots {
 			structEntr.Boot = entry.Fields["_BOOT_ID"]
-		}
-		if host == entry.Fields["_HOSTNAME"] {
-			host = entry.Fields["_HOSTNAME"]
 		}
 		if structEntr.Identifier == "" {
 			structEntr.Identifier = fmt.Sprintf("%s:%s", entry.Fields["_SYSTEMD_UNIT"], entry.Fields["_SYSTEMD_USER_UNIT"])
