@@ -1,37 +1,63 @@
-name: Release binary
+name: Release
 on:
-  workflow_dispatch:
-  release:
-    types: [created]
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
-permissions: write-all
+permissions:
+  contents: write
 
 jobs:
-  create-bin:
-    name: Release binary
+  release:
+    name: Create release
     runs-on: ubuntu-latest
     steps:
-      - id: checkout
-        uses: actions/checkout@v3 
-      - id: install-deps
+      - uses: actions/checkout@v4
+
+      - name: Check VERSION matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          BASE_VERSION="${TAG_VERSION%%-*}"
+          FILE_VERSION="$(cat VERSION)"
+          # pre-release tags (vX.Y.Z-foo) may match either X.Y.Z-foo or X.Y.Z
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ] && [ "$BASE_VERSION" != "$FILE_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION file (${FILE_VERSION})"
+            exit 1
+          fi
+
+      - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install libsystemd-dev
-      - id: go-setup
-        uses: actions/setup-go@v4
+          sudo apt-get install -y libsystemd-dev
+
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0'
+          go-version-file: go.mod
+
       - name: Vendor
         run: go mod vendor
-      - id: binary-build
-        run: |
-          make build
-      - id: upload-binary
-        uses: xresloader/upload-to-github-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          file: bin/systemd-mcp
-          overwrite: true
-          update_latest_release: true
 
+      - name: Build
+        run: make build
+
+      - name: Create source tarball
+        run: |
+          make dist
+          mv systemd-mcp.tar.gz "systemd-mcp-${GITHUB_REF_NAME#v}.tar.gz"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PRERELEASE=""
+          case "$GITHUB_REF_NAME" in
+            *-*) PRERELEASE="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            $PRERELEASE \
+            bin/systemd-mcp \
+            bin/gatekeeper \
+            "systemd-mcp-${GITHUB_REF_NAME#v}.tar.gz"
