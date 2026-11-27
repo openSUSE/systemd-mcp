@@ -339,10 +339,14 @@ func (sj *HostLog) seekByTimeRange(count uint64, offset uint64, from time.Time, 
 		}
 	}
 
-	if n, err := sj.journal.PreviousSkip(count); err != nil {
-		return 0, fmt.Errorf("failed to move back entries: %w", err)
-	} else if n == 0 {
-		return 0, nil
+	// the cursor is already on the newest entry, so step back count-1 entries
+	// to have count entries in front of it. Hitting the head of the journal
+	// (n < count-1) is fine, the cursor still stands on an entry. Entries older
+	// than the start of the range are skipped while reading.
+	if count > 1 {
+		if _, err := sj.journal.PreviousSkip(count - 1); err != nil {
+			return 0, fmt.Errorf("failed to move back entries: %w", err)
+		}
 	}
 
 	return count, nil
@@ -792,10 +796,21 @@ func (sj *HostLog) ListLog(ctx context.Context, req *mcp.CallToolRequest, params
 
 		timestamp := time.Unix(0, int64(entry.RealtimeTimestamp)*int64(time.Microsecond))
 
-		// we scan forward from the newest entry of the range, so once we run
-		// into an entry older than the start of the range the scan is done
-		if !from.IsZero() && timestamp.Before(from) {
+		// the scan starts up to count entries before the newest entry of the
+		// range, so it may begin with entries older than the range, skip them
+		// without using up the count. The range ends before 'to'.
+		if !to.IsZero() && !timestamp.Before(to) {
 			break
+		}
+		if !from.IsZero() && timestamp.Before(from) {
+			ret, err := sj.journal.Next()
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to read next entry: %w", err)
+			}
+			if ret == 0 {
+				break
+			}
+			continue
 		}
 
 		if regexPattern != nil {

@@ -88,36 +88,206 @@ func (unregisteredAuth) Deauthorize() *godbus.Error { return nil }
 
 func (unregisteredAuth) Close() error { return nil }
 
-func TestListLogForTimeRangeWithoutUnit(t *testing.T) {
-	now := time.Now()
-	from := now.Add(-10 * time.Minute)
-	to := now.Add(5 * time.Minute)
+// testJournal is the synthetic journal created by testdata/make-test-journal.sh,
+// see the script for the full list of entries
+const testJournal = "testdata/test.journal"
 
-	sj := &HostLog{
-		Auth: unregisteredAuth{},
+var (
+	testBoot1 = "11111111111111111111111111111111"
+	testBoot2 = "22222222222222222222222222222222"
+	// first entry of each boot, the entries follow in 10 second steps
+	testBoot1Start = time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	testBoot2Start = time.Date(2026, 1, 2, 8, 0, 0, 0, time.UTC)
+)
+
+// newTestHostLog returns a HostLog reading the synthetic test journal. As the
+// journal is already open, self_init doesn't search for the journal of the
+// host, and accessUser lets the missing polkit policy pass
+func newTestHostLog(t *testing.T) *HostLog {
+	t.Helper()
+	j, err := sdjournal.NewJournalFromFiles(testJournal)
+	require.NoError(t, err, "opening %s, recreate it with testdata/make-test-journal.sh", testJournal)
+	sj := &HostLog{journal: j, access: accessUser, Auth: unregisteredAuth{}}
+	t.Cleanup(func() { sj.Close() })
+	return sj
+}
+
+// listTestLog calls ListLog on the synthetic journal and decodes the result
+func listTestLog(t *testing.T, params *ListLogParams) ListLogResult {
+	t.Helper()
+	res, _, err := newTestHostLog(t).ListLog(context.Background(), nil, params)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	textContent, ok := res.Content[0].(*mcp.TextContent)
+	require.Truef(t, ok, "expected a text content, got %T", res.Content[0])
+	var result ListLogResult
+	require.NoError(t, json.Unmarshal([]byte(textContent.Text), &result))
+	return result
+}
+
+func messageTexts(result ListLogResult) []string {
+	msgs := make([]string, len(result.Messages))
+	for i := range result.Messages {
+		msgs[i] = result.Messages[i].Msg
 	}
+	return msgs
+}
 
-	res, _, err := sj.ListLog(context.Background(), nil, &ListLogParams{
+func TestListLogForTimeRangeWithoutUnit(t *testing.T) {
+	from := testBoot1Start.Add(15 * time.Second)
+	to := testBoot1Start.Add(45 * time.Second)
+
+	result := listTestLog(t, &ListLogParams{
 		Count:    10,
 		From:     journalTime(from),
 		To:       journalTime(to),
 		AllBoots: true,
 	})
-	require.NoError(t, err, "getting logs for a time range without a unit must not fail")
-	require.NotNil(t, res)
-
-	textContent, ok := res.Content[0].(*mcp.TextContent)
-	require.Truef(t, ok, "expected a text content, got %T", res.Content[0])
-
-	var result ListLogResult
-	require.NoError(t, json.Unmarshal([]byte(textContent.Text), &result))
-	require.NotEmptyf(t, result.Messages, "expected log entries in [%s .. %s]", from, to)
-	assert.LessOrEqual(t, len(result.Messages), 10)
+	require.Equal(t, []string{
+		"(root) CMD (run-parts /etc/cron.hourly)",
+		"Accepted publickey for tux from 192.0.2.10 port 50000 ssh2",
+		"user application started",
+	}, messageTexts(result))
+	assert.Equal(t, len(result.Messages), result.NrMessages)
 	for i := range result.Messages {
 		m := &result.Messages[i]
 		assert.Falsef(t, m.Time.Before(from), "entry %d at %s is before the from time %s", i, m.Time, from)
 		assert.Truef(t, m.Time.Before(to), "entry %d at %s is after the to time %s", i, m.Time, to)
+		assert.Equal(t, testBoot1, m.Boot)
 	}
+	assert.True(t, result.Messages[0].Time.Equal(testBoot1Start.Add(20*time.Second)))
+}
+
+func TestListLogForTimeRangeCount(t *testing.T) {
+	// the newest two entries of the first boot
+	result := listTestLog(t, &ListLogParams{
+		Count:    2,
+		From:     journalTime(testBoot1Start),
+		To:       journalTime(testBoot1Start.Add(time.Minute)),
+		AllBoots: true,
+	})
+	assert.Equal(t, []string{
+		"user application started",
+		"usb 1-1: new high-speed USB device",
+	}, messageTexts(result))
+}
+
+func TestListLogForTimeRangeEdges(t *testing.T) {
+	// the only entry of the range is the first entry of the journal
+	result := listTestLog(t, &ListLogParams{
+		Count:    10,
+		From:     journalTime(testBoot1Start.Add(-time.Hour)),
+		To:       journalTime(testBoot1Start.Add(5 * time.Second)),
+		AllBoots: true,
+	})
+	assert.Equal(t, []string{"Started systemd-journald.service."}, messageTexts(result))
+
+	// 'to' is exclusive, 'from' inclusive
+	result = listTestLog(t, &ListLogParams{
+		Count:    10,
+		From:     journalTime(testBoot1Start.Add(10 * time.Second)),
+		To:       journalTime(testBoot1Start.Add(30 * time.Second)),
+		AllBoots: true,
+	})
+	assert.Equal(t, []string{
+		"Server listening on 0.0.0.0 port 22.",
+		"(root) CMD (run-parts /etc/cron.hourly)",
+	}, messageTexts(result))
+
+	// a range over both boots with the newest entries limited by count
+	result = listTestLog(t, &ListLogParams{
+		Count:    3,
+		From:     journalTime(testBoot1Start.Add(40 * time.Second)),
+		To:       journalTime(testBoot2Start.Add(15 * time.Second)),
+		AllBoots: true,
+	})
+	assert.Equal(t, []string{
+		"usb 1-1: new high-speed USB device",
+		"Started systemd-journald.service.",
+		"Server listening on 0.0.0.0 port 22.",
+	}, messageTexts(result))
+	require.Len(t, result.Messages, 3)
+	assert.Equal(t, testBoot1, result.Messages[0].Boot)
+	assert.Equal(t, testBoot2, result.Messages[2].Boot)
+}
+
+func TestListLogForTimeRangeWithoutEntries(t *testing.T) {
+	result := listTestLog(t, &ListLogParams{
+		Count:    10,
+		From:     journalTime(testBoot1Start.Add(time.Hour)),
+		To:       journalTime(testBoot1Start.Add(2 * time.Hour)),
+		AllBoots: true,
+	})
+	assert.Empty(t, result.Messages)
+	assert.Zero(t, result.NrMessages)
+}
+
+func TestListLogAllBoots(t *testing.T) {
+	result := listTestLog(t, &ListLogParams{Count: 100, AllBoots: true})
+	require.Len(t, result.Messages, 10)
+	assert.Equal(t, testBoot1, result.Messages[0].Boot)
+	assert.True(t, result.Messages[0].Time.Equal(testBoot1Start))
+	assert.Equal(t, testBoot2, result.Messages[9].Boot)
+	assert.True(t, result.Messages[9].Time.Equal(testBoot2Start.Add(30*time.Second)))
+	// entries are returned in chronological order
+	for i := 1; i < len(result.Messages); i++ {
+		assert.Truef(t, result.Messages[i-1].Time.Before(result.Messages[i].Time),
+			"entry %d is not older than entry %d", i-1, i)
+	}
+}
+
+func TestListLogCountAndOffset(t *testing.T) {
+	result := listTestLog(t, &ListLogParams{Count: 2, AllBoots: true})
+	assert.Equal(t, []string{
+		"(root) CMD (run-parts /etc/cron.daily)",
+		"error: kex_exchange_identification: Connection closed by remote host",
+	}, messageTexts(result))
+
+	result = listTestLog(t, &ListLogParams{Count: 2, Offset: 2, AllBoots: true})
+	assert.Equal(t, []string{
+		"Started systemd-journald.service.",
+		"Server listening on 0.0.0.0 port 22.",
+	}, messageTexts(result))
+	for i := range result.Messages {
+		assert.Equal(t, testBoot2, result.Messages[i].Boot)
+	}
+}
+
+func TestListLogUnitRegex(t *testing.T) {
+	result := listTestLog(t, &ListLogParams{Count: 100, Unit: []string{"^sshd"}, AllBoots: true})
+	assert.Equal(t, 4, result.NrMessages)
+	// a single unit and identifier are reported once for the whole result
+	assert.Equal(t, "sshd.service", result.UnitName)
+	assert.Equal(t, "sshd", result.Identifier)
+	for i := range result.Messages {
+		assert.Empty(t, result.Messages[i].UnitName)
+		assert.Empty(t, result.Messages[i].Identifier)
+	}
+}
+
+func TestListLogExactUnit(t *testing.T) {
+	result := listTestLog(t, &ListLogParams{Count: 100, Unit: []string{"cron.service"}, ExactUnit: true, AllBoots: true})
+	assert.Equal(t, []string{
+		"(root) CMD (run-parts /etc/cron.hourly)",
+		"(root) CMD (run-parts /etc/cron.daily)",
+	}, messageTexts(result))
+	assert.Equal(t, "cron.service", result.UnitName)
+
+	// the user unit is found via _SYSTEMD_USER_UNIT
+	result = listTestLog(t, &ListLogParams{Count: 100, Unit: []string{"app.service"}, ExactUnit: true, AllBoots: true})
+	assert.Equal(t, []string{"user application started"}, messageTexts(result))
+}
+
+func TestListLogUnknownUnit(t *testing.T) {
+	result := listTestLog(t, &ListLogParams{Count: 100, Unit: []string{"^nonexistent"}, AllBoots: true})
+	assert.Empty(t, result.Messages)
+}
+
+func TestListLogPattern(t *testing.T) {
+	result := listTestLog(t, &ListLogParams{Count: 100, Pattern: "kex_exchange", AllBoots: true})
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "sshd", result.Identifier)
+	assert.Equal(t, testBoot2, result.Messages[0].Boot)
 }
 
 // without the gatekeeper package polkit can't grant its action, which must not
